@@ -119,11 +119,16 @@ def main():
         r = api_call(f"{SERVER}/api/quota-refresh/config", token, "PUT", body)
         print(f"  PUT /api/quota-refresh/config → {json.dumps(r, ensure_ascii=False)[:200]}")
 
-    # 2. 写 caps
+    # 2. 写 caps（unlocked 从 SQLite INTEGER 转 bool）
     if cfg.get("caps"):
+        items = [
+            {"token_id": c["token_id"], "cap_yuan": float(c["cap_yuan"]),
+             "unlocked": bool(c["unlocked"])}
+            for c in cfg["caps"]
+        ]
         r = api_call(f"{SERVER}/api/quota-refresh/caps", token, "PUT",
-                     {"items": cfg["caps"]})
-        print(f"  PUT /api/quota-refresh/caps ({len(cfg['caps'])} 个) → {json.dumps(r, ensure_ascii=False)[:200]}")
+                     {"items": items})
+        print(f"  PUT /api/quota-refresh/caps ({len(items)} 个) → {json.dumps(r, ensure_ascii=False)[:200]}")
 
     # 3. 写 assignments
     if cfg.get("assignments"):
