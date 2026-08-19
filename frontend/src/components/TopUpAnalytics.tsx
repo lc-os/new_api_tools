@@ -743,7 +743,7 @@ function TopUsersBlock({
                       <div className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all" style={{ width: `${pct}%` }} />
                     </div>
                     <div className="text-[10px] text-muted-foreground mt-0.5">
-                      ID {u.user_id} · {u.count} 笔 · 入账 {fmtNum(u.amount)} USD
+                      ID {u.user_id} · {u.count} 笔 · 入账 {fmtNum(u.amount)} 元
                     </div>
                   </div>
                 </div>

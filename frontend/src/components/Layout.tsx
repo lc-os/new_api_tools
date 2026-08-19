@@ -1,5 +1,5 @@
 import { ReactNode, useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react'
-import { LayoutDashboard, Ticket, DollarSign, BarChart3, Users, LogOut, Activity, Globe, Monitor, UserPlus, Key, RadioTower, Bell, Menu, X, Server, CalendarCheck, Settings, ListChecks } from 'lucide-react'
+import { LayoutDashboard, Ticket, DollarSign, BarChart3, Users, LogOut, Activity, Globe, Monitor, UserPlus, Key, RadioTower, Bell, Menu, X, Server, CalendarCheck, Settings, ListChecks, ChartColumn } from 'lucide-react'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import {
@@ -9,7 +9,7 @@ import { cn } from '../lib/utils'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch, createAuthHeaders } from '../lib/api'
 
-export type TabType = 'dashboard' | 'risk' | 'abuse-broadcast' | 'ip-analysis' | 'redemptions' | 'topups' | 'analytics' | 'model-status' | 'users' | 'auto-group' | 'tokens' | 'channels' | 'checkins' | 'task-logs'
+export type TabType = 'dashboard' | 'token-usage' | 'risk' | 'abuse-broadcast' | 'ip-analysis' | 'redemptions' | 'topups' | 'analytics' | 'model-status' | 'users' | 'auto-group' | 'tokens' | 'channels' | 'checkins' | 'task-logs'
 
 interface DbStatus {
   connected: boolean
@@ -27,6 +27,7 @@ interface LayoutProps {
 
 const tabs: { id: TabType; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: '仪表板', icon: LayoutDashboard },
+  { id: 'token-usage', label: '用量看板', icon: ChartColumn },
   { id: 'topups', label: '充值记录', icon: DollarSign },
   { id: 'risk', label: '风控中心', icon: Activity },
   { id: 'abuse-broadcast', label: '联合广播', icon: RadioTower },
@@ -46,7 +47,7 @@ const tabs: { id: TabType; label: string; icon: typeof LayoutDashboard }[] = [
 const HIDDEN_TABS_KEY = 'newapi_tools_hidden_tabs'
 
 // 用户从未保存过配置时默认关闭的功能页（用户改过一次后完全以其配置为准）
-const DEFAULT_HIDDEN_TABS: TabType[] = ['abuse-broadcast', 'checkins', 'auto-group']
+const DEFAULT_HIDDEN_TABS: TabType[] = ['abuse-broadcast', 'redemptions', 'checkins', 'auto-group']
 
 function loadHiddenTabs(): Set<TabType> {
   const raw = localStorage.getItem(HIDDEN_TABS_KEY)

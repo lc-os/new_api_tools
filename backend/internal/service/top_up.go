@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/new-api-tools/backend/internal/database"
+	"github.com/new-api-tools/backend/internal/logger"
 	"github.com/new-api-tools/backend/internal/util"
 )
 
@@ -406,7 +408,7 @@ func ExportTopUpsToCSV(ctx context.Context, w io.Writer, params ListTopUpParams)
 	defer csvW.Flush()
 
 	header := []string{
-		"ID", "用户ID", "用户名", "获得额度(USD)", "实付金额(CNY)",
+		"ID", "用户ID", "用户名", "额度(元)", "金额(元)",
 		"交易号", "支付方式", "支付渠道", "状态", "归一状态", "完成耗时(秒)", "异常标记", "创建时间", "完成时间",
 	}
 	if err := csvW.Write(header); err != nil {
@@ -638,4 +640,67 @@ func GetTopUpByID(id int64) (*TopUpRecord, error) {
 	}
 	enrichTopUpRecord(&rec, time.Now().Unix(), defaultPendingAnomalyHours)
 	return &rec, nil
+}
+
+// quotaPerYuan is the new-api quota amount equivalent to 1 yuan.
+// Derived from the site's pricing: model_price 0.001 yuan per call = 500 quota.
+const quotaPerYuan = 500000
+
+// RechargeUser manually adds quota to a user's balance and writes an audit record
+// into the top_ups table so the manual top-up is visible in the top-up list.
+// money is in yuan; returns the new balance (quota).
+func RechargeUser(userID int64, money float64) (map[string]interface{}, error) {
+	db := database.Get()
+	if userID <= 0 {
+		return nil, errors.New("用户 ID 无效")
+	}
+	if money <= 0 {
+		return nil, errors.New("充值金额必须大于 0")
+	}
+
+	// Verify the user exists and grab current balance
+	row, err := db.QueryOneWithTimeout(10*time.Second, db.RebindQuery(
+		"SELECT id, username, quota FROM users WHERE id = ? AND deleted_at IS NULL"), userID)
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return nil, errors.New("用户不存在或已删除")
+	}
+
+	quota := int64(money * quotaPerYuan)
+	if quota <= 0 {
+		return nil, errors.New("充值金额过小，换算后额度为 0")
+	}
+	now := time.Now().Unix()
+
+	// Update balance (only when the row still exists, avoid recharging deleted users)
+	updated, err := db.Execute(db.RebindQuery(
+		"UPDATE users SET quota = quota + ? WHERE id = ? AND deleted_at IS NULL"), quota, userID)
+	if err != nil {
+		return nil, err
+	}
+	if updated == 0 {
+		return nil, errors.New("用户不存在或已删除")
+	}
+
+	// Audit record (best-effort: a failure here must not block the top-up itself)
+	tradeNo := fmt.Sprintf("RECHG%d%04d", now, rand.Intn(10000))
+	auditQuery := db.RebindQuery(`INSERT INTO top_ups
+		(user_id, amount, money, trade_no, payment_method, payment_provider, create_time, complete_time, status)
+		VALUES (?, ?, ?, ?, 'manual', 'manual', ?, ?, 'success')`)
+	if _, auditErr := db.Execute(auditQuery, userID, quota, money, tradeNo, now, now); auditErr != nil {
+		// Top-up already applied; log the audit failure and continue
+		logger.L.Error("人工充值审计记录写入失败: "+auditErr.Error(), logger.CatBusiness)
+	}
+
+	newBalance := toInt64(row["quota"]) + quota
+	return map[string]interface{}{
+		"user_id":      userID,
+		"username":     toString(row["username"]),
+		"money":        money,
+		"quota_added":  quota,
+		"new_balance":  newBalance,
+		"trade_no":     tradeNo,
+	}, nil
 }

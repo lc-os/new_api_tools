@@ -42,6 +42,7 @@ func RegisterTopUpRoutes(r *gin.RouterGroup) {
 		g.GET("/payment-methods", GetPaymentMethods)
 		g.GET("/payment-providers", GetPaymentProviders)
 		g.GET("/export", ExportTopUps)
+		g.POST("/recharge", RechargeUser)
 		g.GET("/:id", GetTopUpRecord)
 	}
 }
@@ -159,6 +160,34 @@ func GetPaymentProviders(c *gin.Context) {
 		"success": true,
 		"data":    providers,
 	})
+}
+
+// POST /api/top-ups/recharge
+// RechargeUser manually tops up a user's balance. Body: { user_id, money (yuan) }
+func RechargeUser(c *gin.Context) {
+	var req struct {
+		UserID int64   `json:"user_id"`
+		Money  float64 `json:"money"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"message": "请求格式错误"}})
+		return
+	}
+	if req.UserID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"message": "用户 ID 无效"}})
+		return
+	}
+	if req.Money <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"message": "充值金额必须大于 0"}})
+		return
+	}
+
+	result, err := service.RechargeUser(req.UserID, req.Money)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"message": err.Error()}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
 // GET /api/top-ups/:id

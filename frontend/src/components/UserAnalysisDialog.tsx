@@ -511,7 +511,7 @@ export function UserAnalysisDialog({
                                         RPM: {analysis.risk.requests_per_minute.toFixed(1)}
                                     </Badge>
                                     <Badge variant="secondary" className="px-3 py-1 bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">
-                                        均额: ${((analysis.risk.avg_quota_per_request || 0) / 500000).toFixed(4)}
+                                        均额: ¥{((analysis.risk.avg_quota_per_request || 0) / 500000).toFixed(4)}
                                     </Badge>
                                     {analysis.risk.risk_flags.length > 0 ? (
                                         analysis.risk.risk_flags.map((f) => (
@@ -890,7 +890,7 @@ export function UserAnalysisDialog({
                                                 <div className="text-xs text-muted-foreground">签到次数</div>
                                             </div>
                                             <div className="rounded-lg border bg-muted/30 p-2.5 text-center">
-                                                <div className="text-lg font-bold">${(analysis.risk.checkin_analysis.total_quota_awarded / 500000).toFixed(2)}</div>
+                                                <div className="text-lg font-bold">¥{(analysis.risk.checkin_analysis.total_quota_awarded / 500000).toFixed(2)}</div>
                                                 <div className="text-xs text-muted-foreground">签到获得额度</div>
                                             </div>
                                             <div className={cn(

@@ -24,9 +24,9 @@ import {
   DialogTitle,
 } from './ui/dialog'
 
-interface UserRanking {
-  user_id: number
-  username: string
+interface TokenRanking {
+  token_id: number
+  token_name: string
   request_count: number
   quota_used: number
 }
@@ -114,8 +114,8 @@ export function Analytics() {
   const [state, setState] = useState<AnalyticsState | null>(null)
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [displayProgress, setDisplayProgress] = useState(0) // 平滑显示的进度
-  const [requestRanking, setRequestRanking] = useState<UserRanking[]>([])
-  const [quotaRanking, setQuotaRanking] = useState<UserRanking[]>([])
+  const [requestRanking, setRequestRanking] = useState<TokenRanking[]>([])
+  const [quotaRanking, setQuotaRanking] = useState<TokenRanking[]>([])
   const [modelStats, setModelStats] = useState<ModelStats[]>([])
   const [loading, setLoading] = useState(true)
   const [processing, setProcessing] = useState(false)
@@ -273,8 +273,8 @@ export function Analytics() {
       const data = await response.json()
       if (data.success) {
         setState(data.data.state)
-        setRequestRanking(data.data.user_request_ranking || [])
-        setQuotaRanking(data.data.user_quota_ranking || [])
+        setRequestRanking(data.data.token_request_ranking || [])
+        setQuotaRanking(data.data.token_quota_ranking || [])
         setModelStats(data.data.model_statistics || [])
       }
     } catch (error) {
@@ -558,7 +558,7 @@ export function Analytics() {
     fetchSyncStatus()
   }, [fetchAnalytics, fetchSyncStatus])
 
-  const formatQuota = (quota: number) => `$${(quota / 500000).toFixed(2)}`
+  const formatQuota = (quota: number) => `¥${(quota / 500000).toFixed(2)}`
   const formatNumber = (num: number) => num.toLocaleString('zh-CN')
   const formatTimestamp = (ts: number) => ts ? new Date(ts * 1000).toLocaleString('zh-CN') : '从未'
 
@@ -718,11 +718,11 @@ export function Analytics() {
         </CardContent>
       </Card>
 
-      {/* User Rankings */}
+      {/* Token Rankings */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">用户请求数排行 <span className="text-sm font-normal text-muted-foreground">Top 10</span></CardTitle>
+            <CardTitle className="text-lg">令牌请求数排行 <span className="text-sm font-normal text-muted-foreground">Top 10</span></CardTitle>
           </CardHeader>
           <CardContent>
             {requestRanking.length > 0 ? (
@@ -730,26 +730,26 @@ export function Analytics() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-16">排名</TableHead>
-                    <TableHead>用户</TableHead>
+                    <TableHead>令牌</TableHead>
                     <TableHead className="text-right">请求数</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {requestRanking.map((user, index) => (
-                    <TableRow key={user.user_id}>
+                  {requestRanking.map((token, index) => (
+                    <TableRow key={token.token_id}>
                       <TableCell><RankBadge rank={index + 1} /></TableCell>
                       <TableCell>
                         <div className="flex items-center gap-3">
                           <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-medium text-primary">
-                            {user.username.charAt(0).toUpperCase()}
+                            {token.token_name.charAt(0).toUpperCase()}
                           </div>
                           <div>
-                            <div className="font-medium">{user.username}</div>
-                            <div className="text-xs text-muted-foreground">ID: {user.user_id}</div>
+                            <div className="font-medium">{token.token_name}</div>
+                            <div className="text-xs text-muted-foreground">ID: {token.token_id}</div>
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell className="text-right font-semibold">{formatNumber(user.request_count)}</TableCell>
+                      <TableCell className="text-right font-semibold">{formatNumber(token.request_count)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -762,7 +762,7 @@ export function Analytics() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">用户额度消耗排行 <span className="text-sm font-normal text-muted-foreground">Top 10</span></CardTitle>
+            <CardTitle className="text-lg">令牌额度消耗排行 <span className="text-sm font-normal text-muted-foreground">Top 10</span></CardTitle>
           </CardHeader>
           <CardContent>
             {quotaRanking.length > 0 ? (
@@ -770,26 +770,26 @@ export function Analytics() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-16">排名</TableHead>
-                    <TableHead>用户</TableHead>
+                    <TableHead>令牌</TableHead>
                     <TableHead className="text-right">消耗额度</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {quotaRanking.map((user, index) => (
-                    <TableRow key={user.user_id}>
+                  {quotaRanking.map((token, index) => (
+                    <TableRow key={token.token_id}>
                       <TableCell><RankBadge rank={index + 1} /></TableCell>
                       <TableCell>
                         <div className="flex items-center gap-3">
                           <div className="h-8 w-8 rounded-full bg-green-100 flex items-center justify-center text-sm font-medium text-green-600">
-                            {user.username.charAt(0).toUpperCase()}
+                            {token.token_name.charAt(0).toUpperCase()}
                           </div>
                           <div>
-                            <div className="font-medium">{user.username}</div>
-                            <div className="text-xs text-muted-foreground">ID: {user.user_id}</div>
+                            <div className="font-medium">{token.token_name}</div>
+                            <div className="text-xs text-muted-foreground">ID: {token.token_id}</div>
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell className="text-right font-semibold text-green-600">{formatQuota(user.quota_used)}</TableCell>
+                      <TableCell className="text-right font-semibold text-green-600">{formatQuota(token.quota_used)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

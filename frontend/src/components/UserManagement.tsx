@@ -20,6 +20,7 @@ import {
   Send,
   Key,
   Shield,
+  Wallet,
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
@@ -145,6 +146,11 @@ export function UserManagement() {
 
   // 用户分析弹窗状态
   const [analysisDialogOpen, setAnalysisDialogOpen] = useState(false)
+
+  // 充值弹窗状态
+  const [rechargeTarget, setRechargeTarget] = useState<{ id: number; username: string; quota: number } | null>(null)
+  const [rechargeMoney, setRechargeMoney] = useState('')
+  const [rechargeLoading, setRechargeLoading] = useState(false)
   const [selectedUser, setSelectedUser] = useState<{ id: number; username: string } | null>(null)
 
   // 邀请用户列表状态
@@ -619,7 +625,35 @@ export function UserManagement() {
     }
   }, [analysisDialogOpen, selectedUser, invitedPage, fetchInvitedUsers])
 
-  const formatQuota = (quota: number) => `$${(quota / 500000).toFixed(2)}`
+  // 提交充值（500,000 quota = ¥1，与全站一致）
+  const submitRecharge = async () => {
+    if (!rechargeTarget) return
+    const money = parseFloat(rechargeMoney)
+    if (!money || money <= 0) {
+      showToast('error', '请输入充值金额（元）')
+      return
+    }
+    setRechargeLoading(true)
+    try {
+      const res = await fetch(`${apiUrl}/api/top-ups/recharge`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ user_id: rechargeTarget.id, money }),
+      })
+      const data = await res.json()
+      if (!data.success) throw new Error(data?.error?.message || '充值失败')
+      showToast('success', `充值成功：${rechargeTarget.username} +¥${money.toFixed(2)}（${data.data.quota_added.toLocaleString()} 额度）`)
+      setRechargeTarget(null)
+      setRechargeMoney('')
+      await Promise.all([fetchUsers(), fetchStats()])
+    } catch (e) {
+      showToast('error', e instanceof Error ? e.message : '充值失败')
+    } finally {
+      setRechargeLoading(false)
+    }
+  }
+
+  const formatQuota = (quota: number) => `¥${(quota / 500000).toFixed(2)}`
 
   // 格式化最后请求时间
   // 快速模式下 last_request_time 为 null，根据 request_count 判断
@@ -1010,7 +1044,7 @@ export function UserManagement() {
                     <TableHead className="hidden sm:table-cell">角色</TableHead>
                     <TableHead>状态</TableHead>
                     <TableHead className="hidden lg:table-cell">Linux.do</TableHead>
-                    <TableHead className="text-right">额度 (USD)</TableHead>
+                    <TableHead className="text-right">额度 (元)</TableHead>
                     <TableHead className="text-right hidden sm:table-cell">已用</TableHead>
                     <TableHead className="text-right hidden md:table-cell">请求数</TableHead>
                     <TableHead className="hidden md:table-cell">最后请求</TableHead>
@@ -1107,6 +1141,15 @@ export function UserManagement() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            className="text-amber-500 hover:text-amber-600 hover:bg-amber-500/10 h-7 w-7 p-0"
+                            onClick={() => { setRechargeTarget({ id: user.id, username: user.username, quota: user.quota }); setRechargeMoney('') }}
+                            title="充值"
+                          >
+                            <Wallet className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             className="text-blue-500 hover:text-blue-600 hover:bg-blue-500/10 h-7 w-7 p-0"
                             onClick={() => openUserAnalysis(user.id, user.username)}
                             title="用户分析"
@@ -1176,6 +1219,62 @@ export function UserManagement() {
           )}
         </CardContent>
       </Card>
+
+      {/* 充值 Dialog */}
+      <Dialog open={rechargeTarget !== null} onOpenChange={(open: boolean) => { if (!open) { setRechargeTarget(null); setRechargeMoney('') } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Wallet className="h-4 w-4 text-amber-500" />
+              给用户充值
+            </DialogTitle>
+            <DialogDescription>
+              手动充值到用户账户余额（500,000 额度 = ¥1）
+            </DialogDescription>
+          </DialogHeader>
+          {rechargeTarget && (
+            <div className="py-4 space-y-4">
+              <div className="rounded-lg bg-muted/50 p-3 space-y-1.5 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">用户</span>
+                  <span className="font-medium">{rechargeTarget.username}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">当前余额</span>
+                  <span className="font-mono text-primary font-semibold">¥{(rechargeTarget.quota / 500000).toFixed(2)}</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">充值金额（元）</label>
+                <Input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  placeholder="例如：50"
+                  value={rechargeMoney}
+                  onChange={(e) => setRechargeMoney(e.target.value)}
+                  autoFocus
+                />
+                {parseFloat(rechargeMoney) > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    新增 <span className="font-mono text-primary">{(parseFloat(rechargeMoney) * 500000).toLocaleString('zh-CN')}</span> 额度，
+                    充值后余额 <span className="font-mono">¥{((rechargeTarget.quota + parseFloat(rechargeMoney) * 500000) / 500000).toFixed(2)}</span>
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setRechargeTarget(null); setRechargeMoney('') }} disabled={rechargeLoading}>
+              取消
+            </Button>
+            <Button onClick={submitRecharge} disabled={rechargeLoading} className="bg-amber-500 hover:bg-amber-600">
+              {rechargeLoading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Wallet className="h-4 w-4 mr-2" />}
+              确认充值
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Confirm Dialog */}
       <Dialog open={confirmDialog.isOpen} onOpenChange={(open: boolean) => { setConfirmDialog(prev => ({ ...prev, isOpen: open })); if (!open) { setDeleteConfirmText(''); setDeleteUserTarget(null) } }}>
@@ -1347,7 +1446,7 @@ export function UserManagement() {
                     </div>
                     <div className="rounded-lg border bg-muted/30 p-2 text-center">
                       <div className="text-sm font-bold">{(invitedUsers.stats.total_used_quota / 500000).toFixed(2)}</div>
-                      <div className="text-xs text-muted-foreground">总消耗 $</div>
+                      <div className="text-xs text-muted-foreground">总消耗 ¥</div>
                     </div>
                   </div>
 
@@ -1360,7 +1459,7 @@ export function UserManagement() {
                           <TableHead className="h-8 text-xs">用户名</TableHead>
                           <TableHead className="h-8 text-xs w-[60px]">状态</TableHead>
                           <TableHead className="h-8 text-xs text-right">请求数</TableHead>
-                          <TableHead className="h-8 text-xs text-right">消耗 $</TableHead>
+                          <TableHead className="h-8 text-xs text-right">消耗 ¥</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>

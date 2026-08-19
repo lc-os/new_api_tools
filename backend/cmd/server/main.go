@@ -91,6 +91,7 @@ func main() {
 
 		// Phase 2.2: Dashboard, UserManagement, LogAnalytics
 		handler.RegisterDashboardRoutes(api)
+		handler.RegisterTokenUsageRoutes(api)
 		handler.RegisterUserManagementRoutes(api)
 		handler.RegisterPanelWhitelistRoutes(api)
 		handler.RegisterAffiliateStatsRoutes(api)
@@ -104,6 +105,8 @@ func main() {
 
 		// Phase 2.4: Token Management
 		handler.RegisterTokenRoutes(api)
+		handler.RegisterQuotaRefreshRoutes(api)
+		handler.RegisterPeakPricingRoutes(api)
 
 		// Phase 2.5: Channel Monitor, Checkin Analytics
 		handler.RegisterChannelMonitorRoutes(api)
@@ -129,6 +132,12 @@ func main() {
 
 	stopAbuseBroadcast := make(chan struct{})
 	go backgroundSyncAbuseBroadcast(stopAbuseBroadcast)
+
+	stopQuotaRefresh := make(chan struct{})
+	go backgroundQuotaRefresh(stopQuotaRefresh)
+
+	stopPeakPricing := make(chan struct{})
+	go backgroundPeakPricing(stopPeakPricing)
 
 	// ========== 8. Start server with graceful shutdown ==========
 	srv := &http.Server{
@@ -157,6 +166,8 @@ func main() {
 	// Stop background tasks
 	close(stopIPEnforce)
 	close(stopAbuseBroadcast)
+	close(stopQuotaRefresh)
+	close(stopPeakPricing)
 
 	// Give the server 10 seconds to finish processing requests
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -330,5 +341,78 @@ func toInt64(v interface{}) int64 {
 		return int64(val)
 	default:
 		return 0
+	}
+}
+
+// backgroundQuotaRefresh checks the quota-refresh schedule every minute and
+// fires the daily token quota reset when the configured HH:mm is reached.
+func backgroundQuotaRefresh(stop <-chan struct{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.L.Error(fmt.Sprintf("[额度定时刷新] 后台任务 panic: %v", r))
+		}
+	}()
+
+	select {
+	case <-time.After(15 * time.Second):
+	case <-stop:
+		return
+	}
+
+	logger.L.System("[额度定时刷新] 定时任务已启动 (检查间隔: 1分钟)")
+
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	svc := service.NewQuotaRefreshService()
+
+	for {
+		select {
+		case <-stop:
+			logger.L.System("[额度定时刷新] 定时任务已停止")
+			return
+		case now := <-ticker.C:
+			if err := svc.MaybeRun(now); err != nil {
+				logger.L.Error("[额度定时刷新] 执行失败: " + err.Error(), logger.CatTask)
+			}
+			// 共享池耗尽保护：池子余额用完则所有令牌停用（幂等，池子充值后自动恢复）
+			if err := svc.EnforceSharedPoolGuard(); err != nil {
+				logger.L.Error("[额度共享池] 耗尽保护执行失败: "+err.Error(), logger.CatTask)
+			}
+		}
+	}
+}
+
+// backgroundPeakPricing checks every minute whether the current time has
+// crossed into/out of DeepSeek's peak pricing hours and switches new-api
+// model prices (deepseek-v4-*) between peak and off-peak rates.
+func backgroundPeakPricing(stop <-chan struct{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.L.Error(fmt.Sprintf("[时段定价] 后台任务 panic: %v", r))
+		}
+	}()
+
+	select {
+	case <-time.After(15 * time.Second):
+	case <-stop:
+		return
+	}
+
+	logger.L.System("[时段定价] 定时任务已启动 (检查间隔: 1分钟)")
+
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	svc := service.NewPeakPricingService()
+
+	for {
+		select {
+		case <-stop:
+			logger.L.System("[时段定价] 定时任务已停止")
+			return
+		case now := <-ticker.C:
+			if err := svc.MaybeApply(now); err != nil {
+				logger.L.Error("[时段定价] 切换失败: "+err.Error(), logger.CatTask)
+			}
+		}
 	}
 }

@@ -81,12 +81,10 @@ func (s *DashboardService) GetSystemOverview(period string, noCache bool) (map[s
 		result["active_tokens"] = row["active_tokens"]
 	}
 
-	// active_users lives in the logs table → query the log DB separately
-	// (logs may be on a different database via LOG_SQL_DSN, so it can't be a
-	// subquery alongside the users/tokens counts above).
-	activeQuery := s.logDB.RebindQuery(`SELECT COUNT(DISTINCT user_id) as active_users FROM logs WHERE created_at >= ? AND type IN (2, 5)`)
+	// active_tokens (usage) lives in the logs table → query the log DB separately
+	activeQuery := s.logDB.RebindQuery(`SELECT COUNT(DISTINCT token_id) as active_usage_tokens FROM logs WHERE created_at >= ? AND type IN (2, 5)`)
 	if activeRow, aErr := s.logDB.QueryOneWithTimeout(15*time.Second, activeQuery, startTime); aErr == nil && activeRow != nil {
-		result["active_users"] = activeRow["active_users"]
+		result["active_usage_tokens"] = activeRow["active_usage_tokens"]
 	}
 
 	// Combined query 2: channels
@@ -245,7 +243,7 @@ func (s *DashboardService) GetDailyTrends(days int, noCache bool) ([]map[string]
 			SELECT %s as day_group,
 				COALESCE(SUM(count), 0) as request_count,
 				COALESCE(SUM(quota), 0) as quota_used,
-				COUNT(DISTINCT user_id) as unique_users
+				COUNT(DISTINCT token_id) as unique_tokens
 			FROM quota_data
 			WHERE created_at >= ?
 			GROUP BY %s
@@ -257,7 +255,7 @@ func (s *DashboardService) GetDailyTrends(days int, noCache bool) ([]map[string]
 			SELECT %s as day_group,
 				COUNT(*) as request_count,
 				COALESCE(SUM(quota), 0) as quota_used,
-				COUNT(DISTINCT user_id) as unique_users
+				COUNT(DISTINCT token_id) as unique_tokens
 			FROM logs
 			WHERE created_at >= ? AND type = 2
 			GROUP BY %s
@@ -314,10 +312,10 @@ func (s *DashboardService) GetHourlyTrends(hours int, noCache bool) ([]map[strin
 	return rows, nil
 }
 
-// GetTopUsers returns top users by quota usage (subquery-first optimization)
-func (s *DashboardService) GetTopUsers(period string, limit int, noCache bool) ([]map[string]interface{}, error) {
+// GetTopTokens returns top tokens by quota usage
+func (s *DashboardService) GetTopTokens(period string, limit int, noCache bool) ([]map[string]interface{}, error) {
 	cm := cache.Get()
-	cacheKey := fmt.Sprintf("dashboard:topusers:%s:%d", period, limit)
+	cacheKey := fmt.Sprintf("dashboard:toptokens:%s:%d", period, limit)
 	if !noCache {
 		var cached []map[string]interface{}
 		if found, _ := cm.GetJSON(cacheKey, &cached); found {
@@ -327,20 +325,23 @@ func (s *DashboardService) GetTopUsers(period string, limit int, noCache bool) (
 
 	startTime, endTime := parsePeriodToTimestamps(period)
 
-	// logs 表已反范式存有 username，直接聚合，无需 JOIN users（兼容 logs 独立库）。
+	// logs 表已反范式存有 username，无需 JOIN users（兼容 logs 独立库）。
+	// 按 token_id 聚合（每令牌用量），同时应用面板白名单过滤。
 	wlCond, wlArgs := PanelWhitelistNotInClause("user_id")
 	wlSQL := ""
 	if wlCond != "" {
 		wlSQL = " AND " + wlCond
 	}
 	query := s.logDB.RebindQuery(fmt.Sprintf(`
-		SELECT user_id,
+		SELECT token_id,
+			COALESCE(MAX(token_name), '') as token_name,
+			COALESCE(MAX(user_id), 0) as user_id,
 			COALESCE(MAX(username), '') as username,
 			COUNT(*) as request_count,
 			COALESCE(SUM(quota), 0) as quota_used
 		FROM logs
 		WHERE created_at >= ? AND created_at <= ? AND type IN (2, 5)%s
-		GROUP BY user_id
+		GROUP BY token_id
 		ORDER BY quota_used DESC
 		LIMIT ?`, wlSQL))
 
@@ -352,8 +353,8 @@ func (s *DashboardService) GetTopUsers(period string, limit int, noCache bool) (
 		return nil, err
 	}
 
-	// username 可能为空（老日志未回填）→ 用主库补齐
-	s.fillUsernames(rows)
+	// token_name 可能为空（老日志未回填）→ 用 token 表补齐
+	s.fillTokenNames(rows)
 	cm.Set(cacheKey, rows, 3*time.Minute)
 	return rows, nil
 }
@@ -364,25 +365,22 @@ func (s *DashboardService) InvalidateDashboardCache() {
 	cm.DeleteByPrefix("dashboard:")
 }
 
-// fillUsernames backfills empty "username" fields in log-derived rows by looking
-// them up in the main users table. This handles rows whose denormalized
-// logs.username was empty (older log entries) — and works across a separate log
-// DB, since the lookup is a second query against the main DB rather than a JOIN.
-func (s *DashboardService) fillUsernames(rows []map[string]interface{}) {
-	// Collect user_ids that still lack a username.
+// fillTokenNames backfills empty "token_name" fields in log-derived rows by looking
+// them up in the tokens table.
+func (s *DashboardService) fillTokenNames(rows []map[string]interface{}) {
 	missing := make([]int64, 0)
 	seen := make(map[int64]bool)
 	for _, r := range rows {
-		name, _ := r["username"].(string)
+		name, _ := r["token_name"].(string)
 		if name != "" {
 			continue
 		}
-		uid := toInt64(r["user_id"])
-		if uid <= 0 || seen[uid] {
+		tid := toInt64(r["token_id"])
+		if tid <= 0 || seen[tid] {
 			continue
 		}
-		seen[uid] = true
-		missing = append(missing, uid)
+		seen[tid] = true
+		missing = append(missing, tid)
 	}
 	if len(missing) == 0 {
 		return
@@ -390,25 +388,25 @@ func (s *DashboardService) fillUsernames(rows []map[string]interface{}) {
 
 	placeholders := make([]string, len(missing))
 	args := make([]interface{}, len(missing))
-	for i, uid := range missing {
+	for i, tid := range missing {
 		placeholders[i] = s.db.Placeholder(i + 1)
-		args[i] = uid
+		args[i] = tid
 	}
-	query := fmt.Sprintf("SELECT id, username FROM users WHERE id IN (%s)", strings.Join(placeholders, ","))
+	query := fmt.Sprintf("SELECT id, name FROM tokens WHERE id IN (%s) AND deleted_at IS NULL", strings.Join(placeholders, ","))
 	nameRows, err := s.db.Query(query, args...)
 	if err != nil {
 		return
 	}
 	byID := make(map[int64]string, len(nameRows))
 	for _, nr := range nameRows {
-		byID[toInt64(nr["id"])] = fmt.Sprintf("%v", nr["username"])
+		byID[toInt64(nr["id"])] = fmt.Sprintf("%v", nr["name"])
 	}
 	for _, r := range rows {
-		if name, _ := r["username"].(string); name != "" {
+		if name, _ := r["token_name"].(string); name != "" {
 			continue
 		}
-		if name, ok := byID[toInt64(r["user_id"])]; ok {
-			r["username"] = name
+		if name, ok := byID[toInt64(r["token_id"])]; ok {
+			r["token_name"] = name
 		}
 	}
 }
@@ -724,7 +722,7 @@ func fillDailyGaps(rows []map[string]interface{}, days int, tzOffset int) []map[
 				"timestamp":     ts,
 				"request_count": int64(0),
 				"quota_used":    int64(0),
-				"unique_users":  int64(0),
+				"unique_tokens":  int64(0),
 			})
 		}
 	}

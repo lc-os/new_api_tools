@@ -6,18 +6,18 @@ import (
 	"math/rand"
 )
 
-// TokensPerUSD is the conversion rate (1 USD = 500,000 tokens)
-const TokensPerUSD = 500000
+// QuotaPerYuan is the conversion rate (1 元 = 500,000 quota)
+const QuotaPerYuan = 500000
 
-// CalculateFixedQuota converts a USD amount to tokens
+// CalculateFixedQuota converts a 元 amount to quota
 func CalculateFixedQuota(amount float64) (int64, error) {
 	if amount < 0 {
 		return 0, fmt.Errorf("amount must be non-negative")
 	}
-	return int64(math.Round(amount * TokensPerUSD)), nil
+	return int64(math.Round(amount * QuotaPerYuan)), nil
 }
 
-// CalculateRandomQuota generates a random token amount within the specified USD range
+// CalculateRandomQuota generates a random quota amount within the specified 元 range
 func CalculateRandomQuota(minAmount, maxAmount float64) (int64, error) {
 	if minAmount < 0 || maxAmount < 0 {
 		return 0, fmt.Errorf("amounts must be non-negative")
@@ -26,8 +26,8 @@ func CalculateRandomQuota(minAmount, maxAmount float64) (int64, error) {
 		return 0, fmt.Errorf("min_amount must not exceed max_amount")
 	}
 
-	minQuota := int64(math.Round(minAmount * TokensPerUSD))
-	maxQuota := int64(math.Round(maxAmount * TokensPerUSD))
+	minQuota := int64(math.Round(minAmount * QuotaPerYuan))
+	maxQuota := int64(math.Round(maxAmount * QuotaPerYuan))
 
 	if minQuota == maxQuota {
 		return minQuota, nil

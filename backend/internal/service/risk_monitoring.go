@@ -23,20 +23,19 @@ func NewRiskMonitoringService() *RiskMonitoringService {
 	return &RiskMonitoringService{db: database.Get(), logDB: database.GetLog()}
 }
 
-// enrichUserInfo backfills username/display_name (preferring display_name) and
-// user_status onto log-derived leaderboard rows by querying the main users
-// table. Replaces an in-query JOIN so it works when logs live in a separate DB.
-func (s *RiskMonitoringService) enrichUserInfo(rows []map[string]interface{}) {
+// enrichTokenInfo backfills token_name onto log-derived leaderboard rows by querying
+// the tokens table, replacing enrichUserInfo for token-dimension leaderboards.
+func (s *RiskMonitoringService) enrichTokenInfo(rows []map[string]interface{}) {
 	if len(rows) == 0 {
 		return
 	}
 	ids := make([]interface{}, 0, len(rows))
 	seen := make(map[int64]bool)
 	for _, r := range rows {
-		uid := toInt64(r["user_id"])
-		if uid > 0 && !seen[uid] {
-			seen[uid] = true
-			ids = append(ids, uid)
+		tid := toInt64(r["token_id"])
+		if tid > 0 && !seen[tid] {
+			seen[tid] = true
+			ids = append(ids, tid)
 		}
 	}
 	if len(ids) == 0 {
@@ -47,36 +46,38 @@ func (s *RiskMonitoringService) enrichUserInfo(rows []map[string]interface{}) {
 	for i := range ids {
 		ph[i] = s.db.Placeholder(i + 1)
 	}
-	q := fmt.Sprintf("SELECT id, username, display_name, status FROM users WHERE id IN (%s) AND deleted_at IS NULL", strings.Join(ph, ","))
-	urows, err := s.db.Query(q, ids...)
+	q := fmt.Sprintf("SELECT id, name, user_id, status FROM tokens WHERE id IN (%s) AND deleted_at IS NULL", strings.Join(ph, ","))
+	trows, err := s.db.Query(q, ids...)
 	if err != nil {
 		return
 	}
-	type uinfo struct {
+	type tinfo struct {
 		name   string
+		userID int64
 		status int64
 	}
-	byID := make(map[int64]uinfo, len(urows))
-	for _, ur := range urows {
-		name := fmt.Sprintf("%v", ur["display_name"])
-		if name == "" || name == "<nil>" {
-			name = fmt.Sprintf("%v", ur["username"])
+	byID := make(map[int64]tinfo, len(trows))
+	for _, tr := range trows {
+		byID[toInt64(tr["id"])] = tinfo{
+			name:   fmt.Sprintf("%v", tr["name"]),
+			userID: toInt64(tr["user_id"]),
+			status: toInt64(tr["status"]),
 		}
-		byID[toInt64(ur["id"])] = uinfo{name: name, status: toInt64(ur["status"])}
 	}
 	for _, r := range rows {
-		info, ok := byID[toInt64(r["user_id"])]
+		info, ok := byID[toInt64(r["token_id"])]
 		if !ok {
-			// User missing from main DB → keep logs.username, default status.
-			if _, exists := r["user_status"]; !exists {
-				r["user_status"] = int64(0)
+			if _, exists := r["token_status"]; !exists {
+				r["token_status"] = int64(0)
 			}
 			continue
 		}
+		// 优先用 token 表的 name 覆盖 logs 反范式字段（logs.token_name 可能缺失/不准确）
 		if info.name != "" && info.name != "<nil>" {
-			r["username"] = info.name
+			r["token_name"] = info.name
 		}
-		r["user_status"] = info.status
+		r["user_id"] = info.userID
+		r["token_status"] = info.status
 	}
 }
 
@@ -154,8 +155,10 @@ func (s *RiskMonitoringService) GetLeaderboards(windows []string, limit int, sor
 			wlSQL = " AND " + wlCond
 		}
 		query := s.logDB.RebindQuery(fmt.Sprintf(`
-			SELECT l.user_id as user_id,
-				COALESCE(NULLIF(MAX(l.username), ''), '') as username,
+			SELECT l.token_id as token_id,
+				COALESCE(NULLIF(MAX(l.token_name), ''), '') as token_name,
+				COALESCE(MAX(l.user_id), 0) as user_id,
+				COALESCE(MAX(l.username), '') as username,
 				COUNT(*) as request_count,
 				SUM(CASE WHEN l.type = 5 THEN 1 ELSE 0 END) as failure_requests,
 				(SUM(CASE WHEN l.type = 5 THEN 1 ELSE 0 END) * 1.0) / NULLIF(COUNT(*), 0) as failure_rate,
@@ -166,8 +169,8 @@ func (s *RiskMonitoringService) GetLeaderboards(windows []string, limit int, sor
 			FROM logs l
 			WHERE l.created_at >= ? AND l.created_at <= ?
 				AND l.type IN (2, 5)
-				AND l.user_id IS NOT NULL%s
-			GROUP BY l.user_id
+				AND l.token_id IS NOT NULL
+			GROUP BY l.token_id
 			ORDER BY %s
 			LIMIT ?`, uniqueIPsExpr, wlSQL, orderBy))
 
@@ -180,8 +183,8 @@ func (s *RiskMonitoringService) GetLeaderboards(windows []string, limit int, sor
 			continue
 		}
 
-		// Enrich with display_name / status from the main users table.
-		s.enrichUserInfo(rows)
+		// Enrich with token_name / user_id from the tokens table.
+		s.enrichTokenInfo(rows)
 
 		windowsData[window] = rows
 	}

@@ -42,7 +42,7 @@ type TokenStatistics struct {
 type TokenListParams struct {
 	Page     int
 	PageSize int
-	Status   string // "active", "disabled", "expired", ""
+	Status   string // "active", "disabled", "expired", "active_3d", "active_7d", ""
 	Name     string
 	Key      string // exact token key match (sk- prefix is stripped)
 	UserID   int64
@@ -134,6 +134,41 @@ func (s *TokenService) ListTokens(params TokenListParams) (map[string]interface{
 		conditions = append(conditions, "t.status != 1")
 	case "expired":
 		conditions = append(conditions, fmt.Sprintf("t.expired_time > 0 AND t.expired_time <= %d", now))
+	case "active_3d", "active_7d":
+		// 近 N 天活跃：日志可能分库（LOG_SQL_DSN），无法跨库 JOIN，
+		// 因此先从日志库查出活跃 token_id 列表，再作为 IN 条件过滤主库。
+		days := 3
+		if params.Status == "active_7d" {
+			days = 7
+		}
+		windowStart := now - int64(days*86400)
+		activeQuery := fmt.Sprintf(
+			"SELECT DISTINCT token_id FROM logs WHERE type IN (2, 5) AND created_at >= %s AND token_id > 0",
+			s.logDB.Placeholder(1))
+		activeRows, err := s.logDB.Query(activeQuery, windowStart)
+		if err != nil {
+			return nil, err
+		}
+		if len(activeRows) == 0 {
+			return map[string]interface{}{
+				"items":       []map[string]interface{}{},
+				"total":       0,
+				"page":        params.Page,
+				"page_size":   params.PageSize,
+				"total_pages": 1,
+			}, nil
+		}
+		ids := make([]interface{}, 0, len(activeRows))
+		for _, row := range activeRows {
+			ids = append(ids, toInt64(row["token_id"]))
+		}
+		placeholders := make([]string, 0, len(ids))
+		for range ids {
+			// 统一使用 ? 占位符，由 RebindQuery 按顺序转成 $n，避免编号冲突
+			placeholders = append(placeholders, "?")
+		}
+		conditions = append(conditions, fmt.Sprintf("t.id IN (%s)", strings.Join(placeholders, ",")))
+		args = append(args, ids...)
 	}
 
 	// 安全审计筛选

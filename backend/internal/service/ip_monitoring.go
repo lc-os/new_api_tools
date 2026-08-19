@@ -328,7 +328,7 @@ func (s *IPMonitoringService) GetMultiIPTokens(window string, minIPs, limit int,
 	return result, nil
 }
 
-// GetMultiIPUsers returns users accessing from multiple IPs with top IP details
+// GetMultiIPUsers returns tokens accessing from multiple IPs with top IP details
 func (s *IPMonitoringService) GetMultiIPUsers(window string, minIPs, limit int, noCache bool) (map[string]interface{}, error) {
 	seconds, ok := WindowSeconds[window]
 	if !ok {
@@ -352,11 +352,12 @@ func (s *IPMonitoringService) GetMultiIPUsers(window string, minIPs, limit int, 
 		wlSQL = " AND " + wlCond
 	}
 	query := s.logDB.RebindQuery(fmt.Sprintf(`
-		SELECT l.user_id, COALESCE(l.username, '') as username,
+		SELECT l.token_id, COALESCE(l.token_name, '') as token_name,
+			l.user_id, COALESCE(l.username, '') as username,
 			COUNT(DISTINCT l.ip) as ip_count, COUNT(*) as request_count
 		FROM logs l
 		WHERE l.created_at >= ? AND l.ip IS NOT NULL AND l.ip <> ''%s
-		GROUP BY l.user_id, l.username
+		GROUP BY l.token_id, l.token_name, l.user_id, l.username
 		HAVING COUNT(DISTINCT l.ip) >= ?
 		ORDER BY ip_count DESC
 		LIMIT ?`, wlSQL))
@@ -374,44 +375,154 @@ func (s *IPMonitoringService) GetMultiIPUsers(window string, minIPs, limit int, 
 		}, nil
 	}
 
-	// Batch fetch top IPs for all users
+	// Batch fetch IP details for all tokens
 	if len(rows) > 0 {
-		userIDs := make([]interface{}, 0, len(rows))
+		tokenIDs := make([]interface{}, 0, len(rows))
 		for _, row := range rows {
-			userIDs = append(userIDs, toInt64(row["user_id"]))
+			tokenIDs = append(tokenIDs, toInt64(row["token_id"]))
 		}
 
-		placeholders := buildPlaceholders(s.logDB.IsPG, len(userIDs), 2)
+		placeholders := buildPlaceholders(s.logDB.IsPG, len(tokenIDs), 2)
 		args := []interface{}{startTime}
-		args = append(args, userIDs...)
+		args = append(args, tokenIDs...)
 
 		ipQuery := s.logDB.RebindQuery(fmt.Sprintf(`
-				SELECT user_id, ip, request_count
+				SELECT token_id, ip, request_count
 				FROM (
 					SELECT grouped.*,
-						ROW_NUMBER() OVER (PARTITION BY grouped.user_id ORDER BY grouped.request_count DESC) as rn
+						ROW_NUMBER() OVER (PARTITION BY grouped.token_id ORDER BY grouped.request_count DESC) as rn
 					FROM (
-						SELECT user_id, ip, COUNT(*) as request_count
+						SELECT token_id, ip, COUNT(*) as request_count
 						FROM logs
-						WHERE created_at >= ? AND user_id IN (%s) AND ip IS NOT NULL AND ip <> ''
-						GROUP BY user_id, ip
+						WHERE created_at >= ? AND token_id IN (%s) AND ip IS NOT NULL AND ip <> ''
+						GROUP BY token_id, ip
 					) grouped
 				) ranked
 				WHERE rn <= %d
-				ORDER BY user_id, request_count DESC`, placeholders, userIPDetailLimit))
+				ORDER BY token_id, request_count DESC`, placeholders, tokenIPDetailLimit))
 
 		ipRows, err := s.logDB.QueryWithTimeout(ipMonitoringQueryTimeout, ipQuery, args...)
 		if err == nil {
-			// Group IPs by user_id. SQL already limits each group.
-			ipsByUser := map[int64][]map[string]interface{}{}
+			// Group IPs by token_id. SQL already limits each group.
+			ipsByToken := map[int64][]map[string]interface{}{}
 			for _, ir := range ipRows {
-				uid := toInt64(ir["user_id"])
-				delete(ir, "user_id")
-				ipsByUser[uid] = append(ipsByUser[uid], ir)
+				tid := toInt64(ir["token_id"])
+				delete(ir, "token_id")
+				ipsByToken[tid] = append(ipsByToken[tid], ir)
 			}
 			for _, row := range rows {
-				uid := toInt64(row["user_id"])
-				if ips, ok := ipsByUser[uid]; ok {
+				tid := toInt64(row["token_id"])
+				if ips, ok := ipsByToken[tid]; ok {
+					row["ips"] = ips
+				} else {
+					row["ips"] = []interface{}{}
+				}
+			}
+		} else {
+			for _, row := range rows {
+				row["ips"] = []interface{}{}
+			}
+		}
+	}
+
+	result := map[string]interface{}{
+		"items":   rows,
+		"total":   len(rows),
+		"window":  window,
+		"min_ips": minIPs,
+	}
+
+	cm.Set(cacheKey, result, 5*time.Minute)
+	return result, nil
+}
+
+// GetMultiIPUsers returns tokens accessing from multiple IPs with top IP details
+func (s *IPMonitoringService) GetMultiIPUsers(window string, minIPs, limit int, noCache bool) (map[string]interface{}, error) {
+	seconds, ok := WindowSeconds[window]
+	if !ok {
+		seconds = 86400
+	}
+	startTime := time.Now().Unix() - seconds
+
+	cacheKey := fmt.Sprintf("ip:multi_user:%s:%d:%d", window, minIPs, limit)
+	cm := cache.Get()
+	var cached map[string]interface{}
+	if !noCache {
+		found, _ := cm.GetJSON(cacheKey, &cached)
+		if found {
+			return cached, nil
+		}
+	}
+
+	wlCond, wlArgs := PanelWhitelistNotInClause("l.user_id")
+	wlSQL := ""
+	if wlCond != "" {
+		wlSQL = " AND " + wlCond
+	}
+	query := s.logDB.RebindQuery(fmt.Sprintf(`
+		SELECT l.token_id, COALESCE(l.token_name, '') as token_name,
+			l.user_id, COALESCE(l.username, '') as username,
+			COUNT(DISTINCT l.ip) as ip_count, COUNT(*) as request_count
+		FROM logs l
+		WHERE l.created_at >= ? AND l.ip IS NOT NULL AND l.ip <> ''%s
+		GROUP BY l.token_id, l.token_name, l.user_id, l.username
+		HAVING COUNT(DISTINCT l.ip) >= ?
+		ORDER BY ip_count DESC
+		LIMIT ?`, wlSQL))
+		HAVING COUNT(DISTINCT l.ip) >= ?
+		ORDER BY ip_count DESC
+		LIMIT ?`, wlSQL))
+
+	qArgs := []interface{}{startTime}
+	qArgs = append(qArgs, wlArgs...)
+	qArgs = append(qArgs, minIPs, limit)
+	rows, err := s.logDB.QueryWithTimeout(ipMonitoringQueryTimeout, query, qArgs...)
+	if err != nil {
+		return map[string]interface{}{
+			"items":   []interface{}{},
+			"total":   0,
+			"window":  window,
+			"min_ips": minIPs,
+		}, nil
+	}
+
+	// Batch fetch top IPs for all tokens
+	if len(rows) > 0 {
+		tokenIDs := make([]interface{}, 0, len(rows))
+		for _, row := range rows {
+			tokenIDs = append(tokenIDs, toInt64(row["token_id"]))
+		}
+
+		placeholders := buildPlaceholders(s.logDB.IsPG, len(tokenIDs), 2)
+		args := []interface{}{startTime}
+		args = append(args, tokenIDs...)
+
+		ipQuery := s.logDB.RebindQuery(fmt.Sprintf(`
+				SELECT token_id, ip, request_count
+				FROM (
+					SELECT grouped.*,
+						ROW_NUMBER() OVER (PARTITION BY grouped.token_id ORDER BY grouped.request_count DESC) as rn
+					FROM (
+						SELECT token_id, ip, COUNT(*) as request_count
+						FROM logs
+						WHERE created_at >= ? AND token_id IN (%s) AND ip IS NOT NULL AND ip <> ''
+						GROUP BY token_id, ip
+					) grouped
+				) ranked
+				WHERE rn <= %d
+				ORDER BY token_id, request_count DESC`, placeholders, tokenIPDetailLimit))
+
+		ipRows, err := s.logDB.QueryWithTimeout(ipMonitoringQueryTimeout, ipQuery, args...)
+		if err == nil {
+			ipsByToken := map[int64][]map[string]interface{}{}
+			for _, ir := range ipRows {
+				tid := toInt64(ir["token_id"])
+				delete(ir, "token_id")
+				ipsByToken[tid] = append(ipsByToken[tid], ir)
+			}
+			for _, row := range rows {
+				tid := toInt64(row["token_id"])
+				if ips, ok := ipsByToken[tid]; ok {
 					row["top_ips"] = ips
 				} else {
 					row["top_ips"] = []interface{}{}

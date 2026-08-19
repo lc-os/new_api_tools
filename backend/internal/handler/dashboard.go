@@ -17,7 +17,7 @@ func RegisterDashboardRoutes(r *gin.RouterGroup) {
 		g.GET("/models", GetModelUsage)
 		g.GET("/trends/daily", GetDailyTrends)
 		g.GET("/trends/hourly", GetHourlyTrends)
-		g.GET("/top-users", GetTopUsers)
+		g.GET("/top-users", GetTopTokens)
 		g.GET("/channels", GetChannelStatus)
 		g.POST("/cache/invalidate", InvalidateDashboardCache)
 		g.GET("/refresh-estimate", GetRefreshEstimate)
@@ -99,14 +99,14 @@ func GetHourlyTrends(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
 }
 
-// GET /api/dashboard/top-users
-func GetTopUsers(c *gin.Context) {
+// GET /api/dashboard/top-users (返回令牌维度统计)
+func GetTopTokens(c *gin.Context) {
 	period := c.DefaultQuery("period", "7d")
 	limit := parseLimit(c, 10, 200)
 	noCache := c.Query("no_cache") == "true"
 	svc := service.NewDashboardService()
 
-	data, err := svc.GetTopUsers(period, limit, noCache)
+	data, err := svc.GetTopTokens(period, limit, noCache)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"message": err.Error()}})
 		return

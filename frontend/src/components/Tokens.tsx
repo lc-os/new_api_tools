@@ -1,17 +1,20 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useToast } from './Toast'
 import { useAuth } from '../contexts/AuthContext'
-import { Key, Loader2, RefreshCw, Filter, Search, CheckCircle2, XCircle, AlertCircle, Clock, Tag, ShieldBan, ShieldCheck, Globe, Infinity as InfinityIcon, CalendarOff } from 'lucide-react'
+import { Key, Loader2, RefreshCw, Filter, Search, CheckCircle2, XCircle, AlertCircle, Clock, Tag, Timer, ShieldBan, ShieldCheck, Globe, Infinity as InfinityIcon, CalendarOff } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table'
 import { Select } from './ui/select'
 import { Input } from './ui/input'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 import { StatCard } from './StatCard'
 import { UserAnalysisDialog } from './UserAnalysisDialog'
 import { TokenBatchDisableDialog } from './TokenBatchDisableDialog'
 import { TokenAnalysisDialog } from './TokenAnalysisDialog'
+import { QuotaRefreshPanel } from './QuotaRefreshPanel'
+import { PeakPricingPanel } from './PeakPricingPanel'
 import { cn } from '../lib/utils'
 
 interface TokenRecord {
@@ -60,11 +63,12 @@ interface PaginatedResponse {
   total_pages: number
 }
 
-type StatusFilter = '' | 'active' | 'disabled' | 'expired'
+type StatusFilter = '' | 'active' | 'disabled' | 'expired' | 'active_3d' | 'active_7d'
 
 export function Tokens() {
   const { showToast } = useToast()
   const { token } = useAuth()
+  const [activeTab, setActiveTab] = useState<'list' | 'quota'>('list')
 
   const [tokens, setTokens] = useState<TokenRecord[]>([])
   const [statistics, setStatistics] = useState<TokenStatistics | null>(null)
@@ -235,7 +239,7 @@ export function Tokens() {
     return new Date(ts * 1000).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
   }
 
-  const formatQuota = (quota: number) => `$${(quota / 500000).toFixed(2)}`
+  const formatQuota = (quota: number) => `¥${(quota / 500000).toFixed(2)}`
 
   const isTokenExpired = (expiredTime: number) => {
     if (!expiredTime || expiredTime <= 0) return false
@@ -314,6 +318,20 @@ export function Tokens() {
         </div>
       </div>
 
+      {/* 令牌列表 / 额度管理 Tabs */}
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'list' | 'quota')} className="w-full">
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="list" className="gap-2">
+            <Key className="h-4 w-4" />
+            令牌列表
+          </TabsTrigger>
+          <TabsTrigger value="quota" className="gap-2">
+            <Timer className="h-4 w-4" />
+            额度管理
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="list" forceMount className="data-[state=inactive]:hidden mt-6 space-y-6">
       {/* Statistics Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
@@ -406,6 +424,8 @@ export function Tokens() {
                 <option value="active">启用</option>
                 <option value="disabled">禁用</option>
                 <option value="expired">已过期</option>
+                <option value="active_3d">3天活跃</option>
+                <option value="active_7d">7天活跃</option>
               </Select>
             </div>
             <div className="space-y-1">
@@ -539,7 +559,7 @@ export function Tokens() {
                     </div>
                     <div className="text-muted-foreground">分组：{t.group || 'default'}</div>
                     <div className="col-span-2 text-muted-foreground">
-                      额度：{t.unlimited_quota ? <span className="text-blue-600">无限</span> : <>总 {formatQuota(t.quota)} · 用 <span className="text-green-600">{formatQuota(t.used_quota)}</span></>}
+                      额度：{t.unlimited_quota ? <span className="text-blue-600">无限</span> : <span className="text-green-600">剩余 {formatQuota(t.remain_quota)}</span>}
                     </div>
                     {t.models && <div className="col-span-2 text-muted-foreground truncate" title={t.models}>模型：{t.models}</div>}
                     <div className="text-muted-foreground">创建：{formatTimestamp(t.created_time)}</div>
@@ -653,10 +673,7 @@ export function Tokens() {
                           {t.unlimited_quota ? (
                             <span className="font-medium text-blue-600">无限额度</span>
                           ) : (
-                            <>
-                              <span className="text-muted-foreground">总: {formatQuota(t.quota)}</span>
-                              <span className="font-medium text-green-600">已用: {formatQuota(t.used_quota)}</span>
-                            </>
+                            <span className="font-medium text-green-600">剩余: {formatQuota(t.remain_quota)}</span>
                           )}
                         </div>
                       </TableCell>
@@ -721,6 +738,13 @@ export function Tokens() {
           )}
         </CardContent>
       </Card>
+        </TabsContent>
+
+        <TabsContent value="quota" forceMount className="data-[state=inactive]:hidden mt-6 space-y-6">
+          <QuotaRefreshPanel />
+          <PeakPricingPanel />
+        </TabsContent>
+      </Tabs>
 
       {/* Batch Disable Dialog */}
       <TokenBatchDisableDialog

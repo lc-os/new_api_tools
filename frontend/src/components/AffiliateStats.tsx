@@ -277,7 +277,7 @@ export function AffiliateStats() {
         <StatCard
           title="累计入账额度"
           value={summaryLoading ? '-' : `${formatAmount(summary?.total_amount || 0)}`}
-          subValue="USD quota"
+          subValue="额度（元）"
           icon={CircleDollarSign}
           color="amber"
           className="border-l-4 border-l-amber-500"

@@ -11,7 +11,7 @@ type RefreshInterval = 0 | 30 | 60 | 120 | 300 // 秒，0表示关闭
 
 interface SystemOverview {
   total_users: number
-  active_users: number
+  active_usage_tokens: number
   total_tokens: number
   active_tokens: number
   total_channels: number
@@ -43,12 +43,12 @@ interface DailyTrend {
   hour?: string
   request_count: number
   quota_used: number
-  unique_users?: number
+  unique_tokens?: number
 }
 
 interface AnalyticsSummary {
-  request_king: { user_id: number; username: string; request_count: number } | null
-  quota_king: { user_id: number; username: string; quota_used: number } | null
+  request_king: { token_id: number; token_name: string; request_count: number } | null
+  quota_king: { token_id: number; token_name: string; quota_used: number } | null
 }
 
 interface SystemInfo {
@@ -202,13 +202,13 @@ export function Dashboard() {
 
         setAnalyticsSummary({
           request_king: sortedByRequest.length > 0 ? {
-            user_id: sortedByRequest[0].user_id,
-            username: sortedByRequest[0].username,
+            token_id: sortedByRequest[0].token_id,
+            token_name: sortedByRequest[0].token_name,
             request_count: sortedByRequest[0].request_count,
           } : null,
           quota_king: sortedByQuota.length > 0 ? {
-            user_id: sortedByQuota[0].user_id,
-            username: sortedByQuota[0].username,
+            token_id: sortedByQuota[0].token_id,
+            token_name: sortedByQuota[0].token_name,
             quota_used: sortedByQuota[0].quota_used,
           } : null,
         })
@@ -449,7 +449,7 @@ export function Dashboard() {
     }
   }
 
-  const formatQuota = (quota: number) => `$${(quota / 500000).toFixed(2)}`
+  const formatQuota = (quota: number) => `¥${(quota / 500000).toFixed(2)}`
   const formatNumber = (num: number) => {
     return num.toLocaleString('zh-CN')
   }
@@ -642,7 +642,7 @@ export function Dashboard() {
           <StatCard
             title="用户总数"
             value={overview?.total_users || 0}
-            subValue={`${overview?.active_users || 0} 活跃(${getPeriodLabel()})`}
+            subValue={`${overview?.active_usage_tokens || 0} 活跃(${getPeriodLabel()})`}
             icon={Users}
             color="blue"
           />
@@ -803,7 +803,7 @@ export function Dashboard() {
           icon={Crown}
           user={analyticsSummary?.quota_king}
           valueLabel="总消耗额度"
-          value={analyticsSummary?.quota_king ? `$${(analyticsSummary.quota_king.quota_used / 500000).toFixed(2)}` : undefined}
+          value={analyticsSummary?.quota_king ? `¥${(analyticsSummary.quota_king.quota_used / 500000).toFixed(2)}` : undefined}
           gradient="from-emerald-600 to-teal-600"
           accentColor="text-emerald-100"
         />
@@ -897,7 +897,7 @@ interface KingCardProps {
   title: string
   subtitle: string
   icon: React.ElementType
-  user: { user_id: number; username: string } | null | undefined
+  user: { token_id: number; token_name: string } | null | undefined
   valueLabel: string
   value: string | undefined
   gradient: string
@@ -926,11 +926,11 @@ function KingCard({ title, subtitle, icon: Icon, user, valueLabel, value, gradie
         <div className="mt-6 relative z-10">
           <div className="flex items-center bg-white/10 p-4 rounded-lg backdrop-blur-sm border border-white/10">
             <div className="h-12 w-12 rounded-full bg-white text-blue-600 flex items-center justify-center text-xl font-bold shadow-sm">
-              {user.username.charAt(0).toUpperCase()}
+              {user.token_name.charAt(0).toUpperCase()}
             </div>
             <div className="ml-4">
-              <p className="text-xl font-bold">{user.username}</p>
-              <p className={`text-xs ${accentColor}`}>User ID: {user.user_id}</p>
+              <p className="text-xl font-bold">{user.token_name}</p>
+              <p className={`text-xs ${accentColor}`}>Token ID: {user.token_id}</p>
             </div>
           </div>
           <div className="mt-4 flex justify-between items-end">

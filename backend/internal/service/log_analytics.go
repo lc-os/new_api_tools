@@ -49,11 +49,11 @@ func (s *LogAnalyticsService) GetAnalyticsState() map[string]interface{} {
 	return result
 }
 
-// GetUserRequestRanking returns top users by request count
-func (s *LogAnalyticsService) GetUserRequestRanking(limit int) ([]map[string]interface{}, error) {
+// GetTokenRequestRanking returns top tokens by request count
+func (s *LogAnalyticsService) GetTokenRequestRanking(limit int) ([]map[string]interface{}, error) {
 	cm := cache.Get()
 	var cached []map[string]interface{}
-	found, _ := cm.GetJSON("analytics:user_request_ranking", &cached)
+	found, _ := cm.GetJSON("analytics:token_request_ranking", &cached)
 	if found && len(cached) > 0 {
 		if limit > 0 && limit < len(cached) {
 			return cached[:limit], nil
@@ -61,66 +61,34 @@ func (s *LogAnalyticsService) GetUserRequestRanking(limit int) ([]map[string]int
 		return cached, nil
 	}
 
-	var rows []map[string]interface{}
-	var err error
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30).Unix()
+	query := s.logDB.RebindQuery(`
+		SELECT l.token_id,
+			COALESCE(l.token_name, '') as token_name,
+			COALESCE(MAX(l.user_id), 0) as user_id,
+			COALESCE(MAX(l.username), '') as username,
+			COUNT(*) as request_count,
+			COALESCE(SUM(l.quota), 0) as quota_used
+		FROM logs l
+		WHERE l.type IN (2, 5) AND l.token_id > 0 AND l.created_at >= ?
+		GROUP BY l.token_id, l.token_name
+		ORDER BY request_count DESC
+		LIMIT ?`)
 
-	if IsQuotaDataAvailable() {
-		// Fast path: aggregate from quota_data
-		wlCond, wlArgs := PanelWhitelistNotInClause("q.user_id")
-		wlSQL := ""
-		if wlCond != "" {
-			wlSQL = " AND " + wlCond
-		}
-		query := s.db.RebindQuery(fmt.Sprintf(`
-			SELECT q.user_id,
-				COALESCE(u.username, '') as username,
-				COALESCE(SUM(q.count), 0) as request_count,
-				COALESCE(SUM(q.quota), 0) as quota_used
-			FROM quota_data q
-			LEFT JOIN users u ON q.user_id = u.id
-			WHERE q.user_id > 0%s
-			GROUP BY q.user_id, u.username
-			ORDER BY request_count DESC
-			LIMIT ?`, wlSQL))
-		qArgs := append([]interface{}{}, wlArgs...)
-		qArgs = append(qArgs, limit)
-		rows, err = s.db.QueryWithTimeout(30*time.Second, query, qArgs...)
-	} else {
-		// Fallback: scan logs with 30-day filter
-		thirtyDaysAgo := time.Now().AddDate(0, 0, -30).Unix()
-		wlCond, wlArgs := PanelWhitelistNotInClause("l.user_id")
-		wlSQL := ""
-		if wlCond != "" {
-			wlSQL = " AND " + wlCond
-		}
-		query := s.logDB.RebindQuery(fmt.Sprintf(`
-			SELECT l.user_id,
-				COALESCE(l.username, '') as username,
-				COUNT(*) as request_count,
-				COALESCE(SUM(l.quota), 0) as quota_used
-			FROM logs l
-			WHERE l.type IN (2, 5) AND l.user_id > 0 AND l.created_at >= ?%s
-			GROUP BY l.user_id, l.username
-			ORDER BY request_count DESC
-			LIMIT ?`, wlSQL))
-		qArgs := []interface{}{thirtyDaysAgo}
-		qArgs = append(qArgs, wlArgs...)
-		qArgs = append(qArgs, limit)
-		rows, err = s.logDB.QueryWithTimeout(30*time.Second, query, qArgs...)
-	}
+	rows, err := s.logDB.QueryWithTimeout(30*time.Second, query, thirtyDaysAgo, limit)
 	if err != nil {
 		return nil, err
 	}
 
-	cm.Set("analytics:user_request_ranking", rows, 5*time.Minute)
+	cm.Set("analytics:token_request_ranking", rows, 5*time.Minute)
 	return rows, nil
 }
 
-// GetUserQuotaRanking returns top users by quota consumption
-func (s *LogAnalyticsService) GetUserQuotaRanking(limit int) ([]map[string]interface{}, error) {
+// GetTokenQuotaRanking returns top tokens by quota consumption
+func (s *LogAnalyticsService) GetTokenQuotaRanking(limit int) ([]map[string]interface{}, error) {
 	cm := cache.Get()
 	var cached []map[string]interface{}
-	found, _ := cm.GetJSON("analytics:user_quota_ranking", &cached)
+	found, _ := cm.GetJSON("analytics:token_quota_ranking", &cached)
 	if found && len(cached) > 0 {
 		if limit > 0 && limit < len(cached) {
 			return cached[:limit], nil
@@ -128,56 +96,26 @@ func (s *LogAnalyticsService) GetUserQuotaRanking(limit int) ([]map[string]inter
 		return cached, nil
 	}
 
-	var rows []map[string]interface{}
-	var err error
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30).Unix()
+	query := s.logDB.RebindQuery(`
+		SELECT l.token_id,
+			COALESCE(l.token_name, '') as token_name,
+			COALESCE(MAX(l.user_id), 0) as user_id,
+			COALESCE(MAX(l.username), '') as username,
+			COUNT(*) as request_count,
+			COALESCE(SUM(l.quota), 0) as quota_used
+		FROM logs l
+		WHERE l.type IN (2, 5) AND l.token_id > 0 AND l.created_at >= ?
+		GROUP BY l.token_id, l.token_name
+		ORDER BY quota_used DESC
+		LIMIT ?`)
 
-	if IsQuotaDataAvailable() {
-		wlCond, wlArgs := PanelWhitelistNotInClause("q.user_id")
-		wlSQL := ""
-		if wlCond != "" {
-			wlSQL = " AND " + wlCond
-		}
-		query := s.db.RebindQuery(fmt.Sprintf(`
-			SELECT q.user_id,
-				COALESCE(u.username, '') as username,
-				COALESCE(SUM(q.count), 0) as request_count,
-				COALESCE(SUM(q.quota), 0) as quota_used
-			FROM quota_data q
-			LEFT JOIN users u ON q.user_id = u.id
-			WHERE q.user_id > 0%s
-			GROUP BY q.user_id, u.username
-			ORDER BY quota_used DESC
-			LIMIT ?`, wlSQL))
-		qArgs := append([]interface{}{}, wlArgs...)
-		qArgs = append(qArgs, limit)
-		rows, err = s.db.QueryWithTimeout(30*time.Second, query, qArgs...)
-	} else {
-		thirtyDaysAgo := time.Now().AddDate(0, 0, -30).Unix()
-		wlCond, wlArgs := PanelWhitelistNotInClause("l.user_id")
-		wlSQL := ""
-		if wlCond != "" {
-			wlSQL = " AND " + wlCond
-		}
-		query := s.logDB.RebindQuery(fmt.Sprintf(`
-			SELECT l.user_id,
-				COALESCE(l.username, '') as username,
-				COUNT(*) as request_count,
-				COALESCE(SUM(l.quota), 0) as quota_used
-			FROM logs l
-			WHERE l.type IN (2, 5) AND l.user_id > 0 AND l.created_at >= ?%s
-			GROUP BY l.user_id, l.username
-			ORDER BY quota_used DESC
-			LIMIT ?`, wlSQL))
-		qArgs := []interface{}{thirtyDaysAgo}
-		qArgs = append(qArgs, wlArgs...)
-		qArgs = append(qArgs, limit)
-		rows, err = s.logDB.QueryWithTimeout(30*time.Second, query, qArgs...)
-	}
+	rows, err := s.logDB.QueryWithTimeout(30*time.Second, query, thirtyDaysAgo, limit)
 	if err != nil {
 		return nil, err
 	}
 
-	cm.Set("analytics:user_quota_ranking", rows, 5*time.Minute)
+	cm.Set("analytics:token_quota_ranking", rows, 5*time.Minute)
 	return rows, nil
 }
 
@@ -235,16 +173,15 @@ func (s *LogAnalyticsService) GetModelStatistics(limit int) ([]map[string]interf
 }
 
 // GetSummary returns analytics summary matching Python backend format
-// Frontend expects: state, user_request_ranking, user_quota_ranking, model_statistics
 func (s *LogAnalyticsService) GetSummary() (map[string]interface{}, error) {
 	state := s.GetAnalyticsState()
 
-	requestRanking, err := s.GetUserRequestRanking(10)
+	requestRanking, err := s.GetTokenRequestRanking(10)
 	if err != nil {
 		requestRanking = []map[string]interface{}{}
 	}
 
-	quotaRanking, err := s.GetUserQuotaRanking(10)
+	quotaRanking, err := s.GetTokenQuotaRanking(10)
 	if err != nil {
 		quotaRanking = []map[string]interface{}{}
 	}
@@ -256,8 +193,8 @@ func (s *LogAnalyticsService) GetSummary() (map[string]interface{}, error) {
 
 	return map[string]interface{}{
 		"state":                state,
-		"user_request_ranking": requestRanking,
-		"user_quota_ranking":   quotaRanking,
+		"token_request_ranking": requestRanking,
+		"token_quota_ranking":  quotaRanking,
 		"model_statistics":     modelStats,
 	}, nil
 }
@@ -366,8 +303,8 @@ func (s *LogAnalyticsService) CheckDataConsistency(autoReset bool) (map[string]i
 func (s *LogAnalyticsService) clearAllCaches() {
 	cm := cache.Get()
 	cm.Delete("analytics:state")
-	cm.Delete("analytics:user_request_ranking")
-	cm.Delete("analytics:user_quota_ranking")
+	cm.Delete("analytics:token_request_ranking")
+	cm.Delete("analytics:token_quota_ranking")
 	cm.Delete("analytics:model_statistics")
 	cm.Delete(analyticsStatePrefix)
 }
@@ -385,9 +322,7 @@ func (s *LogAnalyticsService) getLogsApproxStats() (total int64, maxID int64) {
 	}
 
 	var statsQuery string
-	if s.logDB.IsCH {
-		statsQuery = `SELECT count() as total FROM logs`
-	} else if s.logDB.IsPG {
+	if s.logDB.IsPG {
 		statsQuery = `SELECT reltuples::bigint as total FROM pg_class WHERE relname = 'logs'`
 	} else {
 		statsQuery = `SELECT TABLE_ROWS as total FROM information_schema.TABLES WHERE TABLE_NAME = 'logs' AND TABLE_SCHEMA = DATABASE()`

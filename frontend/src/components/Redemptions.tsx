@@ -139,7 +139,7 @@ export function Redemptions() {
     return new Date(ts * 1000).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
   }
 
-  const formatQuota = (quota: number) => `$${(quota / 500000).toFixed(2)}`
+  const formatQuota = (quota: number) => `¥${(quota / 500000).toFixed(2)}`
 
   const handleSelectAll = (checked: boolean) => {
     setSelectedIds(checked ? new Set(codes.map(c => c.id)) : new Set())
@@ -463,7 +463,7 @@ export function Redemptions() {
                     </TableHead>
                     <TableHead>兑换码</TableHead>
                     <TableHead>名称</TableHead>
-                    <TableHead>额度 (USD)</TableHead>
+                    <TableHead>额度 (元)</TableHead>
                     <TableHead>状态</TableHead>
                     <TableHead>使用用户</TableHead>
                     <TableHead>创建时间</TableHead>

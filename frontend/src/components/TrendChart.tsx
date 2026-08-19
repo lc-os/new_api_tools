@@ -10,7 +10,7 @@ interface DailyTrend {
   timestamp?: number
   request_count: number
   quota_used: number
-  unique_users?: number
+  unique_tokens?: number
 }
 
 interface TrendChartProps {
@@ -235,12 +235,12 @@ interface FloatingBarTooltipProps {
     hour?: string
     date?: string
     request_count: number
-    unique_users?: number
+    unique_tokens?: number
     quota_used: number
   }
   isHourlyMode: boolean
-  anchorTop: number    // 柱子顶端在视口的 top
-  anchorLeft: number   // 柱子顶端在视口的 left（中心）
+  anchorTop: number
+  anchorLeft: number
 }
 
 function FloatingBarTooltip({ item, isHourlyMode, anchorTop, anchorLeft }: FloatingBarTooltipProps) {
@@ -293,15 +293,15 @@ function FloatingBarTooltip({ item, isHourlyMode, anchorTop, anchorLeft }: Float
           <span className="text-muted-foreground">请求数</span>
           <span className="font-mono font-bold tabular-nums">{Number(item.request_count).toLocaleString()}</span>
         </div>
-        {item.unique_users !== undefined && (
+        {item.unique_tokens !== undefined && (
           <div className="flex justify-between items-center gap-6">
-            <span className="text-muted-foreground">用户数</span>
-            <span className="font-mono tabular-nums">{item.unique_users}</span>
+            <span className="text-muted-foreground">令牌数</span>
+            <span className="font-mono tabular-nums">{item.unique_tokens}</span>
           </div>
         )}
         <div className="flex justify-between items-center gap-6">
           <span className="text-muted-foreground">消耗</span>
-          <span className="font-mono tabular-nums">${(Number(item.quota_used) / 500000).toFixed(4)}</span>
+          <span className="font-mono tabular-nums">¥{(Number(item.quota_used) / 500000).toFixed(4)}</span>
         </div>
       </div>
     </div>

@@ -151,7 +151,7 @@ export function GeneratorForm({ onSubmit, isLoading }: GeneratorFormProps) {
 
         {formData.quota_mode === 'fixed' ? (
           <div>
-            <label className="block text-sm font-medium mb-1">固定额度 (USD)</label>
+            <label className="block text-sm font-medium mb-1">固定额度 (元)</label>
             <input
               type="number"
               min={0.01}
@@ -160,13 +160,13 @@ export function GeneratorForm({ onSubmit, isLoading }: GeneratorFormProps) {
               onChange={(e) => updateField('fixed_amount', parseFloat(e.target.value) || 0)}
               className={inputClass(!!errors.fixed_amount)}
             />
-            <p className="mt-1 text-xs text-muted-foreground">1 USD = 500,000 Token</p>
+            <p className="mt-1 text-xs text-muted-foreground">1 元 = 500,000 Token</p>
             {errors.fixed_amount && <p className="mt-1 text-sm text-destructive">{errors.fixed_amount}</p>}
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-1">最小额度 (USD)</label>
+              <label className="block text-sm font-medium mb-1">最小额度 (元)</label>
               <input
                 type="number"
                 min={0.01}
@@ -178,7 +178,7 @@ export function GeneratorForm({ onSubmit, isLoading }: GeneratorFormProps) {
               {errors.min_amount && <p className="mt-1 text-sm text-destructive">{errors.min_amount}</p>}
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">最大额度 (USD)</label>
+              <label className="block text-sm font-medium mb-1">最大额度 (元)</label>
               <input
                 type="number"
                 min={0.01}

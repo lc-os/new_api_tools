@@ -18,10 +18,10 @@ func RegisterLogAnalyticsRoutes(r *gin.RouterGroup) {
 		g.POST("/batch-process", BatchProcessLogs)
 		g.POST("/batch", BatchProcessLogs)
 		// Python-compatible routes: /ranking/* and /users/*
-		g.GET("/ranking/requests", GetUserRequestRanking)
-		g.GET("/ranking/quota", GetUserQuotaRanking)
-		g.GET("/users/requests", GetUserRequestRanking)
-		g.GET("/users/quota", GetUserQuotaRanking)
+		g.GET("/ranking/requests", GetTokenRequestRanking)
+		g.GET("/ranking/quota", GetTokenQuotaRanking)
+		g.GET("/users/requests", GetTokenRequestRanking)
+		g.GET("/users/quota", GetTokenQuotaRanking)
 		g.GET("/models", GetModelStatistics)
 		g.GET("/summary", GetAnalyticsSummary)
 		g.POST("/reset", ResetAnalytics)
@@ -62,10 +62,10 @@ func BatchProcessLogs(c *gin.Context) {
 }
 
 // GET /api/analytics/ranking/requests or /api/analytics/users/requests
-func GetUserRequestRanking(c *gin.Context) {
+func GetTokenRequestRanking(c *gin.Context) {
 	limit := parseLimit(c, 10, 200)
 	svc := service.NewLogAnalyticsService()
-	data, err := svc.GetUserRequestRanking(limit)
+	data, err := svc.GetTokenRequestRanking(limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResp("QUERY_ERROR", err.Error(), ""))
 		return
@@ -74,10 +74,10 @@ func GetUserRequestRanking(c *gin.Context) {
 }
 
 // GET /api/analytics/ranking/quota or /api/analytics/users/quota
-func GetUserQuotaRanking(c *gin.Context) {
+func GetTokenQuotaRanking(c *gin.Context) {
 	limit := parseLimit(c, 10, 200)
 	svc := service.NewLogAnalyticsService()
-	data, err := svc.GetUserQuotaRanking(limit)
+	data, err := svc.GetTokenQuotaRanking(limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResp("QUERY_ERROR", err.Error(), ""))
 		return

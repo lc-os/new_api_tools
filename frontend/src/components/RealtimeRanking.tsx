@@ -16,6 +16,9 @@ type WindowKey = '1h' | '3h' | '6h' | '12h' | '24h' | '3d' | '7d'
 type SortKey = 'requests' | 'quota' | 'failure_rate'
 
 interface LeaderboardItem {
+  token_id?: number
+  token_name?: string
+  token_status?: number
   user_id: number
   username: string
   user_status: number
@@ -88,7 +91,7 @@ function formatTime(ts: number) {
 }
 
 function formatQuota(quota: number) {
-  return `$${(quota / 500000).toFixed(2)}`
+  return `¥${(quota / 500000).toFixed(2)}`
 }
 
 function formatCountdown(seconds: number) {
@@ -183,6 +186,8 @@ interface MultiIPTokenItem {
 }
 
 interface MultiIPUserItem {
+  token_id: number
+  token_name: string
   user_id: number
   username: string
   ip_count: number
@@ -1676,11 +1681,11 @@ export function RealtimeRanking() {
                   ) : (data[w]?.length ? (
                     <div className="divide-y">
                       {data[w].slice(0, 10).map((item, idx) => {
-                        const name = item.username || item.user_id
-                        const isBanned = item.user_status === 2
+                        const name = item.token_name || item.token_id || item.username || item.user_id
+                        const isBanned = item.token_status === 2
                         return (
                           <div
-                            key={`${w}-${item.user_id}`}
+                            key={`${w}-${item.token_id || item.user_id}`}
                             className={cn(
                               "flex items-center gap-4 px-4 py-3 hover:bg-muted/30 transition-colors group",
                               isBanned && "opacity-60 bg-muted/10"
@@ -1708,7 +1713,7 @@ export function RealtimeRanking() {
                                 {isBanned && <Badge variant="destructive" className="h-4 px-1 text-[10px]">禁用</Badge>}
                               </div>
                               <div className="text-xs text-muted-foreground truncate mt-0.5 flex items-center gap-2">
-                                <span>ID: {item.user_id}</span>
+                                <span>ID: {item.token_id || item.user_id}</span>
                                 <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
                                 <span>IP: {item.unique_ips}</span>
                               </div>
@@ -1790,11 +1795,11 @@ export function RealtimeRanking() {
               ) : (data[selectedWindow]?.length ? (
                 <div className="divide-y">
                   {data[selectedWindow].slice(0, 10).map((item, idx) => {
-                    const name = item.username || item.user_id
-                    const isBanned = item.user_status === 2
+                    const name = item.token_name || item.token_id || item.username || item.user_id
+                    const isBanned = item.token_status === 2
                     return (
                       <div
-                        key={`selected-${item.user_id}`}
+                        key={`selected-${item.token_id || item.user_id}`}
                         className={cn(
                           "flex items-center gap-4 px-4 py-3 hover:bg-muted/30 transition-colors group",
                           isBanned && "opacity-60 bg-muted/10"
@@ -1822,7 +1827,7 @@ export function RealtimeRanking() {
                             {isBanned && <Badge variant="destructive" className="h-4 px-1 text-[10px]">禁用</Badge>}
                           </div>
                           <div className="text-xs text-muted-foreground truncate mt-0.5 flex items-center gap-2">
-                            <span>ID: {item.user_id}</span>
+                            <span>ID: {item.token_id}</span>
                             <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
                             <span>IP: {item.unique_ips}</span>
                             <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
@@ -2874,7 +2879,7 @@ export function RealtimeRanking() {
                         <Table>
                           <TableHeader>
                             <TableRow className="bg-muted/50 hover:bg-muted/50 border-b">
-                              <TableHead className="w-[200px] text-[11px] uppercase tracking-wider py-3 px-4 text-muted-foreground font-bold">用户详情</TableHead>
+                              <TableHead className="w-[200px] text-[11px] uppercase tracking-wider py-3 px-4 text-muted-foreground font-bold">令牌详情</TableHead>
                               <TableHead className="w-[60px] text-[11px] uppercase tracking-wider py-3 text-muted-foreground font-bold">IP 数量</TableHead>
                               <TableHead className="w-[100px] text-[11px] uppercase tracking-wider py-3 text-muted-foreground font-bold">请求总量</TableHead>
                               <TableHead className="hidden md:table-cell text-[11px] uppercase tracking-wider py-3 text-muted-foreground font-bold">常用 IP 分布</TableHead>
@@ -2883,18 +2888,18 @@ export function RealtimeRanking() {
                           </TableHeader>
                           <TableBody>
                             {multiIpUsers.slice((ipPage.users - 1) * ipPageSize, ipPage.users * ipPageSize).map((item) => (
-                              <TableRow key={item.user_id} className="group hover:bg-muted/30 transition-colors border-b last:border-0">
+                              <TableRow key={item.token_id} className="group hover:bg-muted/30 transition-colors border-b last:border-0">
                                 <TableCell className="py-2.5 px-4">
                                   <div
                                     className="flex items-center gap-2 px-2 py-1 rounded-full bg-muted/50 hover:bg-primary/10 hover:text-primary transition-all cursor-pointer border border-transparent hover:border-primary/20 w-fit group/user"
                                     onClick={() => openUserAnalysisFromIP(item.user_id, item.username)}
                                   >
                                     <div className="w-5 h-5 rounded-full bg-blue-500/10 text-blue-600 flex items-center justify-center font-bold text-[10px] border border-blue-500/20 group-hover/user:bg-blue-500/20">
-                                      {item.username[0]?.toUpperCase()}
+                                      {(item.token_name || 'T')[0]?.toUpperCase()}
                                     </div>
                                     <div className="flex flex-col leading-tight">
-                                      <span className="font-bold text-sm whitespace-nowrap">{item.username || item.user_id}</span>
-                                      <span className="text-[9px] opacity-60 font-mono mt-0.5 leading-none">ID: {item.user_id}</span>
+                                      <span className="font-bold text-sm whitespace-nowrap">{item.token_name || item.token_id}</span>
+                                      <span className="text-[9px] opacity-60 font-mono mt-0.5 leading-none">ID: {item.token_id}</span>
                                     </div>
                                   </div>
                                 </TableCell>
@@ -2979,7 +2984,7 @@ export function RealtimeRanking() {
                     ) : (
                       <div className="h-40 flex flex-col items-center justify-center text-muted-foreground text-sm">
                         <Activity className="h-8 w-8 mb-2 opacity-20" />
-                        暂无多 IP 用户
+                        暂无多 IP 令牌
                       </div>
                     )}
                   </CardContent>

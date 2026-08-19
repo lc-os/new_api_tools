@@ -346,7 +346,7 @@ export function TopUps() {
       </div>
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'records' | 'analytics' | 'audit')} className="w-full">
-        <TabsList className="grid w-full max-w-xl grid-cols-3">
+        <TabsList className="grid w-full max-w-md grid-cols-3">
           <TabsTrigger value="records" className="gap-2">
             <ListOrdered className="h-4 w-4" />
             记录
@@ -415,9 +415,9 @@ export function TopUps() {
                 <span className="text-muted-foreground">实付金额:</span>
                 <span className="font-semibold text-primary">{statsLoading ? '-' : formatMoney(statistics?.success_money || 0)}</span>
               </div>
-              <div className="flex items-center gap-2" title="成功充值后用户获得的额度合计">
-                 <span className="text-muted-foreground">获得额度:</span>
-                 <span className="font-semibold text-green-600">{statsLoading ? '-' : formatAmount(statistics?.success_amount || 0)} USD</span>
+              <div className="flex items-center gap-2">
+                 <span className="text-muted-foreground">入账额度:</span>
+                 <span className="font-semibold">{statsLoading ? '-' : formatAmount(statistics?.success_amount || 0)} 元</span>
               </div>
               {(statistics?.unknown_count || 0) > 0 && (
                 <div className="flex items-center gap-2">
@@ -633,8 +633,8 @@ export function TopUps() {
                       <TableRow>
                         <TableHead className="w-[80px]">ID</TableHead>
                         <TableHead>用户</TableHead>
-                        <TableHead title="用户实际支付的金额（top_ups.money）">实付金额 (CNY)</TableHead>
-                        <TableHead title="用户充值后获得的额度（top_ups.amount，USD）">获得额度 (USD)</TableHead>
+                        <TableHead>额度 (元)</TableHead>
+                        <TableHead>金额 (CNY)</TableHead>
                         <TableHead>交易号</TableHead>
                         <TableHead>支付渠道</TableHead>
                         <TableHead>状态</TableHead>
