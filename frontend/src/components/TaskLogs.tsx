@@ -153,7 +153,7 @@ export function TaskLogs() {
     } catch (error) { console.error('Failed to fetch related logs:', error) }
   }
 
-  const formatQuota = (q: number) => `$${((Number(q) || 0) / 500000).toFixed(4)}`
+  const formatQuota = (q: number) => `¥${((Number(q) || 0) / 500000).toFixed(4)}`
   const formatTs = (ts: number) => {
     if (!ts || ts <= 0) return '-'
     return new Date(ts * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })

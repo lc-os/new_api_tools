@@ -168,7 +168,7 @@ func GetUserQuotaIncomeSummary(userID int64, startDate, endDate string) (*UserQu
 	}
 	out.RedemptionCount = red.Cnt
 	out.RedemptionQuotaRaw = red.Quota
-	out.RedemptionQuotaUSD = float64(red.Quota) / float64(util.TokensPerUSD)
+	out.RedemptionQuotaUSD = float64(red.Quota) / float64(util.QuotaPerYuan)
 
 	out.NetPaidAmountUSD = out.PaidAmount
 	out.TotalIncomeUSD = out.PaidAmount + out.RedemptionQuotaUSD
@@ -362,7 +362,7 @@ func exportUserIncomeCSV(ctx context.Context, w io.Writer, params ListTopUpParam
 			if usernameHint == "" && rr.Username != "" {
 				usernameHint = rr.Username
 			}
-			quotaUSD := float64(rr.Quota) / float64(util.TokensPerUSD)
+			quotaUSD := float64(rr.Quota) / float64(util.QuotaPerYuan)
 			redCount++
 			redQuotaUSD += quotaUSD
 

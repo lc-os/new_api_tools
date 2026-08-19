@@ -128,7 +128,7 @@ export function ChannelMonitor() {
 
   const handleRefresh = () => { setRefreshing(true); fetchAll() }
 
-  const formatQuota = (q: number) => `$${(q / 500000).toFixed(2)}`
+  const formatQuota = (q: number) => `¥${(q / 500000).toFixed(2)}`
   const formatTs = (ts: number) => {
     if (!ts || ts <= 0) return '-'
     return new Date(ts * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
@@ -188,7 +188,7 @@ export function ChannelMonitor() {
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard title="渠道总数" value={`${channels.length}`} icon={Server} color="blue" className="border-l-4 border-l-blue-500" />
         <StatCard title="启用渠道" value={`${totals.active}`} icon={CheckCircle2} color="green" className="border-l-4 border-l-green-500" />
-        <StatCard title="余额合计" value={`$${totals.balance.toFixed(2)}`} icon={Wallet} color="yellow" className="border-l-4 border-l-yellow-500" />
+        <StatCard title="余额合计" value={`¥${totals.balance.toFixed(2)}`} icon={Wallet} color="yellow" className="border-l-4 border-l-yellow-500" />
         <StatCard title={`窗口错误率`} value={`${totals.errRate.toFixed(2)}%`} icon={Activity} color={totals.errRate > 5 ? 'red' : 'green'} className={cn('border-l-4', totals.errRate > 5 ? 'border-l-red-500' : 'border-l-green-500')} />
       </div>
 
@@ -261,7 +261,7 @@ export function ChannelMonitor() {
                         <TableCell>
                           <div className="flex flex-col text-xs">
                             <span className={cn('font-medium', Number(c.balance) <= 0 ? 'text-muted-foreground' : Number(c.balance) < 5 ? 'text-red-600' : 'text-green-600')}>
-                              ${Number(c.balance).toFixed(2)}
+                              ¥{Number(c.balance).toFixed(2)}
                             </span>
                             <span className="text-muted-foreground">{formatTs(c.balance_updated_time)}</span>
                           </div>
