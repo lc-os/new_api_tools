@@ -110,3 +110,6 @@ new-api/
 newapi-tool-AbuseHub/
 AGENTS.md
 dev.sh
+
+# Go build cache (sandbox workaround, regenerable)
+.gocache/
