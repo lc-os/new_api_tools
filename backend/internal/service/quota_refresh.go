@@ -26,17 +26,35 @@ type QuotaRefreshService struct {
 	cfg *config.Config
 }
 
+// 调度模式：
+//   - daily   每天执行（不跳过任何日期）
+//   - workday 仅工作日：自动跳过周末与法定节假日（调休上班日正常执行）
+//   - custom  自定义日历：工作日 + 管理员点选的额外休息日（公司自定义放假等）
+const (
+	ScheduleDaily   = "daily"
+	ScheduleWorkday = "workday"
+	ScheduleCustom  = "custom"
+)
+
 // QuotaRefreshConfig is the persisted single-row settings
 type QuotaRefreshConfig struct {
-	Enabled      bool    `json:"enabled"`
-	QuotaAmount  int64   `json:"quota_amount"`  // per-token quota set on each refresh
-	RefreshTime  string  `json:"refresh_time"`  // HH:mm, daily trigger time
-	Mode         string  `json:"mode"`          // uniform | per-token | shared
-	SharedBudget float64 `json:"shared_budget"` // 元，shared 模式全站每日总预算
-	LastRunAt    int64   `json:"last_run_at"`
-	LastRunInfo  string  `json:"last_run_info"`
-	UpdatedAt    int64   `json:"updated_at"`
-	WalletBalance int64  `json:"wallet_balance"` // 共享池当前剩余额度（启用令牌用户钱包合计）
+	Enabled        bool    `json:"enabled"`
+	QuotaAmount    int64   `json:"quota_amount"`     // per-token quota set on each refresh
+	RefreshTime    string  `json:"refresh_time"`     // HH:mm, daily trigger time
+	Mode           string  `json:"mode"`             // uniform | per-token | shared
+	SharedBudget   float64 `json:"shared_budget"`    // 元，shared 模式全站每日总预算
+	ScheduleMode   string  `json:"schedule_mode"`    // daily | workday | custom
+	SkipWeekends   bool    `json:"skip_weekends"`    // 兼容字段（= schedule_mode 为 workday/custom）
+	SkipHolidays   bool    `json:"skip_holidays"`    // 兼容字段（同上）
+	DefaultCapYuan float64 `json:"default_cap_yuan"` // 元，每人每日默认上限（未单独配置的令牌），默认 20
+	OffDays        []string `json:"off_days"`        // 自定义休息日 YYYY-MM-DD（custom 模式生效）
+	LastRunAt      int64   `json:"last_run_at"`
+	LastRunInfo    string  `json:"last_run_info"`
+	UpdatedAt      int64   `json:"updated_at"`
+	WalletBalance  int64   `json:"wallet_balance"` // 共享池当前剩余额度（启用令牌用户钱包合计）
+	// NextRunAt/NextRunInfo 由 GetConfig 计算返回（前端展示用，不落库）
+	NextRunAt    int64  `json:"next_run_at"`
+	NextRunInfo  string `json:"next_run_info"`
 }
 
 // QuotaRefreshRun is one execution record
@@ -69,9 +87,17 @@ type TokenCap struct {
 }
 
 // GetTokenCaps returns the per-token caps for every enabled token,
-// filling defaults (¥20, locked) for tokens without an explicit cap row.
+// filling defaults (configured default cap, locked) for tokens without an explicit cap row.
 func (s *QuotaRefreshService) GetTokenCaps() ([]TokenCap, error) {
 	mainDB := database.Get()
+	cfg, err := s.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+	defaultCap := cfg.DefaultCapYuan
+	if defaultCap <= 0 {
+		defaultCap = DefaultCapYuan
+	}
 	db, err := s.openStore()
 	if err != nil {
 		return nil, err
@@ -116,7 +142,7 @@ func (s *QuotaRefreshService) GetTokenCaps() ([]TokenCap, error) {
 		id := toInt64(row["id"])
 		c, ok := saved[id]
 		if !ok {
-			c = TokenCap{TokenID: id, TokenName: toString(row["name"]), CapYuan: DefaultCapYuan}
+			c = TokenCap{TokenID: id, TokenName: toString(row["name"]), CapYuan: defaultCap}
 		} else {
 			c.TokenName = toString(row["name"])
 		}
@@ -358,18 +384,23 @@ func ensureQuotaRefreshTables(ctx context.Context, db *sql.DB) error {
 			token_id INTEGER PRIMARY KEY,
 			disabled_at INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS quota_refresh_off_days (
+			date TEXT PRIMARY KEY,
+			note TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL DEFAULT 0
+		)`,
 	}
 	for _, stmt := range statements {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
 	}
-	// column migration: add mode/shared_budget to an existing settings table
+	// column migration: add mode/shared_budget/scheduling columns to an existing settings table
 	columns, err := db.QueryContext(ctx, `PRAGMA table_info(quota_refresh_settings)`)
 	if err != nil {
 		return err
 	}
-	hasMode, hasSharedBudget := false, false
+	hasColumn := map[string]bool{}
 	for columns.Next() {
 		var cid int
 		var name, ctype string
@@ -379,21 +410,36 @@ func ensureQuotaRefreshTables(ctx context.Context, db *sql.DB) error {
 			columns.Close()
 			return err
 		}
-		if name == "mode" {
-			hasMode = true
-		}
-		if name == "shared_budget" {
-			hasSharedBudget = true
-		}
+		hasColumn[name] = true
 	}
 	columns.Close()
-	if !hasMode {
+	if !hasColumn["mode"] {
 		if _, err := db.ExecContext(ctx, `ALTER TABLE quota_refresh_settings ADD COLUMN mode TEXT NOT NULL DEFAULT 'uniform'`); err != nil {
 			return err
 		}
 	}
-	if !hasSharedBudget {
+	if !hasColumn["shared_budget"] {
 		if _, err := db.ExecContext(ctx, `ALTER TABLE quota_refresh_settings ADD COLUMN shared_budget REAL NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if !hasColumn["skip_weekends"] {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE quota_refresh_settings ADD COLUMN skip_weekends INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if !hasColumn["skip_holidays"] {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE quota_refresh_settings ADD COLUMN skip_holidays INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if !hasColumn["default_cap_yuan"] {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE quota_refresh_settings ADD COLUMN default_cap_yuan REAL NOT NULL DEFAULT 20`); err != nil {
+			return err
+		}
+	}
+	if !hasColumn["schedule_mode"] {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE quota_refresh_settings ADD COLUMN schedule_mode TEXT NOT NULL DEFAULT 'daily'`); err != nil {
 			return err
 		}
 	}
@@ -402,7 +448,7 @@ func ensureQuotaRefreshTables(ctx context.Context, db *sql.DB) error {
 
 // GetConfig returns the persisted config (defaults if never saved)
 func (s *QuotaRefreshService) GetConfig() (QuotaRefreshConfig, error) {
-	cfg := QuotaRefreshConfig{Enabled: false, QuotaAmount: 0, RefreshTime: "00:00", Mode: "uniform", SharedBudget: 0}
+	cfg := QuotaRefreshConfig{Enabled: false, QuotaAmount: 0, RefreshTime: "00:00", Mode: "uniform", SharedBudget: 0, DefaultCapYuan: DefaultCapYuan}
 	mainDB := database.Get()
 	db, err := s.openStore()
 	if err != nil {
@@ -415,12 +461,15 @@ func (s *QuotaRefreshService) GetConfig() (QuotaRefreshConfig, error) {
 		return cfg, err
 	}
 	var enabled, quotaAmount, lastRunAt, updatedAt int64
-	var refreshTime, lastRunInfo, mode string
-	var sharedBudget float64
+	var refreshTime, lastRunInfo, mode, scheduleMode string
+	var sharedBudget, defaultCapYuan float64
+	var skipWeekends, skipHolidays int64
 	err = db.QueryRowContext(ctx,
-		`SELECT enabled, quota_amount, refresh_time, mode, shared_budget, last_run_at, last_run_info, updated_at
+		`SELECT enabled, quota_amount, refresh_time, mode, shared_budget, last_run_at, last_run_info, updated_at,
+		        skip_weekends, skip_holidays, default_cap_yuan, schedule_mode
 		 FROM quota_refresh_settings WHERE id = 1`).
-		Scan(&enabled, &quotaAmount, &refreshTime, &mode, &sharedBudget, &lastRunAt, &lastRunInfo, &updatedAt)
+		Scan(&enabled, &quotaAmount, &refreshTime, &mode, &sharedBudget, &lastRunAt, &lastRunInfo, &updatedAt,
+			&skipWeekends, &skipHolidays, &defaultCapYuan, &scheduleMode)
 	if err == sql.ErrNoRows {
 		return cfg, nil
 	}
@@ -429,6 +478,38 @@ func (s *QuotaRefreshService) GetConfig() (QuotaRefreshConfig, error) {
 	}
 	if mode == "" {
 		mode = "uniform"
+	}
+	if defaultCapYuan <= 0 {
+		defaultCapYuan = DefaultCapYuan
+	}
+	// 旧配置兼容：从未设置 schedule_mode 时按旧 skip_* 字段推导
+	if scheduleMode == "" || scheduleMode == "daily" {
+		if skipWeekends == 1 || skipHolidays == 1 {
+			scheduleMode = ScheduleWorkday
+		} else {
+			scheduleMode = ScheduleDaily
+		}
+	}
+	if scheduleMode != ScheduleDaily && scheduleMode != ScheduleWorkday && scheduleMode != ScheduleCustom {
+		scheduleMode = ScheduleDaily
+	}
+	skipW, skipH := scheduleMode != ScheduleDaily, scheduleMode != ScheduleDaily
+	// 自定义休息日
+	offDays := []string{}
+	{
+		offRows, err := db.QueryContext(ctx, `SELECT date FROM quota_refresh_off_days ORDER BY date`)
+		if err != nil {
+			return cfg, err
+		}
+		for offRows.Next() {
+			var d string
+			if err := offRows.Scan(&d); err != nil {
+				offRows.Close()
+				return cfg, err
+			}
+			offDays = append(offDays, d)
+		}
+		offRows.Close()
 	}
 	// 共享池当前剩余：拥有启用令牌的用户钱包余额合计（shared 模式下即池子剩余量）
 	walletBalance := int64(0)
@@ -464,34 +545,64 @@ func (s *QuotaRefreshService) GetConfig() (QuotaRefreshConfig, error) {
 			}
 		}
 	}
+	nextRunAt, nextRunInfo := int64(0), ""
+	if enabled == 1 {
+		nextRunAt, nextRunInfo = s.computeNextRun(time.Now(), QuotaRefreshConfig{
+			Enabled:      true,
+			RefreshTime:  refreshTime,
+			ScheduleMode: scheduleMode,
+			OffDays:      offDays,
+		})
+	}
 	return QuotaRefreshConfig{
-		Enabled:       enabled == 1,
-		QuotaAmount:   quotaAmount,
-		RefreshTime:   refreshTime,
-		Mode:          mode,
-		SharedBudget:  sharedBudget,
-		LastRunAt:     lastRunAt,
-		LastRunInfo:   lastRunInfo,
-		UpdatedAt:     updatedAt,
-		WalletBalance: walletBalance,
+		Enabled:        enabled == 1,
+		QuotaAmount:    quotaAmount,
+		RefreshTime:    refreshTime,
+		Mode:           mode,
+		SharedBudget:   sharedBudget,
+		ScheduleMode:   scheduleMode,
+		SkipWeekends:   skipW,
+		SkipHolidays:   skipH,
+		DefaultCapYuan: defaultCapYuan,
+		OffDays:        offDays,
+		LastRunAt:      lastRunAt,
+		LastRunInfo:    lastRunInfo,
+		UpdatedAt:      updatedAt,
+		WalletBalance:  walletBalance,
+		NextRunAt:      nextRunAt,
+		NextRunInfo:    nextRunInfo,
 	}, nil
 }
 
 // UpdateConfig saves the settings (single row id=1, upsert)
 // mode: per-token(每令牌额度：统一设置或分配表) | shared(全站共享总额度)
 // 'uniform' is accepted as a legacy alias of per-token without an assignment table.
-func (s *QuotaRefreshService) UpdateConfig(enabled bool, quotaAmount int64, refreshTime, mode string, sharedBudget float64) (QuotaRefreshConfig, error) {
+// scheduleMode: daily(每天) | workday(仅工作日) | custom(自定义日历)。
+// 旧版 skip_weekends/skip_holidays 兼容列随 scheduleMode 同步写入。
+func (s *QuotaRefreshService) UpdateConfig(enabled bool, quotaAmount int64, refreshTime, mode string, sharedBudget float64, scheduleMode string, defaultCapYuan float64) (QuotaRefreshConfig, error) {
 	if mode == "" || mode == "uniform" {
 		mode = "per-token"
 	}
 	if mode != "per-token" && mode != "shared" {
 		return QuotaRefreshConfig{}, fmt.Errorf("额度模式无效")
 	}
+	if scheduleMode == "" {
+		scheduleMode = ScheduleDaily
+	}
+	if scheduleMode != ScheduleDaily && scheduleMode != ScheduleWorkday && scheduleMode != ScheduleCustom {
+		return QuotaRefreshConfig{}, fmt.Errorf("调度模式无效（应为 daily/workday/custom）")
+	}
 	if quotaAmount < 0 {
 		return QuotaRefreshConfig{}, fmt.Errorf("额度不能为负数")
 	}
 	if sharedBudget < 0 {
 		return QuotaRefreshConfig{}, fmt.Errorf("共享总额度不能为负数")
+	}
+	if defaultCapYuan < 0 {
+		return QuotaRefreshConfig{}, fmt.Errorf("每人默认上限不能为负数")
+	}
+	if defaultCapYuan == 0 {
+		defaultCapYuan = DefaultCapYuan // 0 视为未设置，回落默认
 	}
 	// validate HH:mm
 	if _, err := time.Parse("15:04", refreshTime); err != nil {
@@ -530,10 +641,16 @@ func (s *QuotaRefreshService) UpdateConfig(enabled bool, quotaAmount int64, refr
 	if enabled {
 		enabledInt = 1
 	}
+	skipWeekendsInt, skipHolidaysInt := 0, 0
+	if scheduleMode != ScheduleDaily {
+		skipWeekendsInt, skipHolidaysInt = 1, 1
+	}
 	// keep last_run_at when re-saving so the "already ran today" state survives
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO quota_refresh_settings (id, enabled, quota_amount, refresh_time, mode, shared_budget, last_run_at, last_run_info, updated_at)
-		VALUES (1, ?, ?, ?, ?, ?, COALESCE((SELECT last_run_at FROM quota_refresh_settings WHERE id = 1), 0),
+		INSERT INTO quota_refresh_settings (id, enabled, quota_amount, refresh_time, mode, shared_budget,
+			skip_weekends, skip_holidays, default_cap_yuan, schedule_mode, last_run_at, last_run_info, updated_at)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		        COALESCE((SELECT last_run_at FROM quota_refresh_settings WHERE id = 1), 0),
 		        COALESCE((SELECT last_run_info FROM quota_refresh_settings WHERE id = 1), ''), ?)
 		ON CONFLICT(id) DO UPDATE SET
 			enabled = excluded.enabled,
@@ -541,8 +658,13 @@ func (s *QuotaRefreshService) UpdateConfig(enabled bool, quotaAmount int64, refr
 			refresh_time = excluded.refresh_time,
 			mode = excluded.mode,
 			shared_budget = excluded.shared_budget,
+			skip_weekends = excluded.skip_weekends,
+			skip_holidays = excluded.skip_holidays,
+			default_cap_yuan = excluded.default_cap_yuan,
+			schedule_mode = excluded.schedule_mode,
 			updated_at = excluded.updated_at`,
-		enabledInt, quotaAmount, refreshTime, mode, sharedBudget, now)
+		enabledInt, quotaAmount, refreshTime, mode, sharedBudget,
+		skipWeekendsInt, skipHolidaysInt, defaultCapYuan, scheduleMode, now)
 	if err != nil {
 		return QuotaRefreshConfig{}, err
 	}
@@ -573,7 +695,7 @@ func (s *QuotaRefreshService) RunNow() (map[string]interface{}, error) {
 
 	// shared：共享额度池（用完都停）
 	if cfg.Mode == "shared" {
-		return s.runShared(ctx, db, cfg.SharedBudget, nowUnix)
+		return s.runShared(ctx, db, cfg.SharedBudget, cfg.DefaultCapYuan, nowUnix)
 	}
 
 	// per-token：分配表优先，无分配表则统一额度
@@ -645,9 +767,12 @@ type QuotaAssignment struct {
 //     remain_quota = cap (unlimited_quota=false) and stop on their own when
 //     exhausted; tokens whose cap is unlocked stay unlimited and draw from
 //     the shared pool
-func (s *QuotaRefreshService) runShared(ctx context.Context, db *sql.DB, budgetYuan float64, nowUnix int64) (map[string]interface{}, error) {
+func (s *QuotaRefreshService) runShared(ctx context.Context, db *sql.DB, budgetYuan float64, defaultCapYuan float64, nowUnix int64) (map[string]interface{}, error) {
 	if budgetYuan <= 0 {
 		return nil, fmt.Errorf("未设置共享总额度（元），无法刷新")
+	}
+	if defaultCapYuan <= 0 {
+		defaultCapYuan = DefaultCapYuan
 	}
 	mainDB := database.Get()
 	budgetQuota := int64(budgetYuan * 500000)
@@ -743,7 +868,7 @@ func (s *QuotaRefreshService) runShared(ctx context.Context, db *sql.DB, budgetY
 		tid := toInt64(row["id"])
 		c, ok := capsMap[tid]
 		if !ok {
-			c = TokenCap{TokenID: tid, CapYuan: DefaultCapYuan}
+			c = TokenCap{TokenID: tid, CapYuan: defaultCapYuan}
 		}
 		capQuota := int64(c.CapYuan * 500000)
 		if capQuota < 0 {
@@ -793,9 +918,9 @@ func (s *QuotaRefreshService) runShared(ctx context.Context, db *sql.DB, budgetY
 		return nil, err
 	}
 
-	// 记录实际应用的上限（caps 表每个令牌的 cap_yuan；无记录用默认值）——
+	// 记录实际应用的上限（caps 表每个令牌的 cap_yuan；无记录用配置的默认值）——
 	// 用于运行记录的文案展示，避免硬编码 DefaultCapYuan 造成“20/50”显示误导
-	appliedCapYuan := DefaultCapYuan
+	appliedCapYuan := defaultCapYuan
 	if len(capsMap) > 0 {
 		// 取第一个令牌的上限（同批次通常一致；不一致时展示平均值）
 		total := 0.0
@@ -884,8 +1009,68 @@ func (s *QuotaRefreshService) runWithAssignments(ctx context.Context, db *sql.DB
 	return result, nil
 }
 
+// computeNextRun finds the next scheduled run that is not skipped by the
+// schedule rules (from now+1s onward, up to 366 days) and returns its
+// unix timestamp plus a human-readable label. Returns (0, "") when disabled.
+func (s *QuotaRefreshService) computeNextRun(now time.Time, cfg QuotaRefreshConfig) (int64, string) {
+	if !cfg.Enabled {
+		return 0, ""
+	}
+	hour, min := 0, 0
+	fmt.Sscanf(cfg.RefreshTime, "%d:%d", &hour, &min)
+	skipW, skipH := cfg.ScheduleMode != ScheduleDaily, cfg.ScheduleMode != ScheduleDaily
+	offDays := map[string]bool{}
+	for _, d := range cfg.OffDays {
+		offDays[d] = true
+	}
+	skippedWeekend, skippedHoliday, skippedCustom := false, false, false
+	for i := 0; i <= 366; i++ {
+		t := time.Date(now.Year(), now.Month(), now.Day(), hour, min, 0, 0, now.Location()).AddDate(0, 0, i)
+		if t.Unix() <= now.Unix() {
+			continue
+		}
+		if IsSkippedRefreshDay(t, skipW, skipH, offDays) {
+			if offDays[t.Format("2006-01-02")] {
+				skippedCustom = true
+			}
+			if IsCNHoliday(t) {
+				skippedHoliday = true
+			}
+			if t.Weekday() == time.Saturday || t.Weekday() == time.Sunday {
+				skippedWeekend = true
+			}
+			continue
+		}
+		info := t.Format("1月2日") + fmt.Sprintf(" %02d:%02d", hour, min)
+		switch i {
+		case 0:
+			info = "今天" + fmt.Sprintf(" %02d:%02d", hour, min)
+		case 1:
+			info = "明天" + fmt.Sprintf(" %02d:%02d", hour, min)
+		}
+		if skippedWeekend || skippedHoliday || skippedCustom {
+			reasons := []string{}
+			if skippedCustom {
+				reasons = append(reasons, "跳过自定义休息日")
+			}
+			if skippedHoliday {
+				reasons = append(reasons, "跳过节假日")
+			}
+			if skippedWeekend {
+				reasons = append(reasons, "跳过周末")
+			}
+			info += "（" + strings.Join(reasons, "、") + "）"
+		}
+		return t.Unix(), info
+	}
+	return 0, ""
+}
+
 // MaybeRun checks the clock and fires the refresh when the configured time is due
 // and today's run has not happened yet. Called by the background ticker every minute.
+// Skipped days (per schedule_mode + custom off days) simply do nothing:
+// LastRunAt stays untouched so the next eligible day runs normally — skipped
+// days are never backfilled.
 func (s *QuotaRefreshService) MaybeRun(now time.Time) error {
 	cfg, err := s.GetConfig()
 	if err != nil {
@@ -895,6 +1080,15 @@ func (s *QuotaRefreshService) MaybeRun(now time.Time) error {
 		return nil
 	}
 	if now.Format("15:04") != cfg.RefreshTime {
+		return nil
+	}
+	// 跳过日：不执行、不记录（LastRunAt 保持旧值，下一个工作日正常触发）
+	skipW, skipH := cfg.ScheduleMode != ScheduleDaily, cfg.ScheduleMode != ScheduleDaily
+	offDays := map[string]bool{}
+	for _, d := range cfg.OffDays {
+		offDays[d] = true
+	}
+	if IsSkippedRefreshDay(now, skipW, skipH, offDays) {
 		return nil
 	}
 	// skip if already ran on this calendar day
@@ -1480,6 +1674,138 @@ func (s *QuotaRefreshService) ClearAssignments() error {
 	}
 	_, err = db.ExecContext(ctx, `DELETE FROM quota_refresh_assignments`)
 	return err
+}
+
+// OffDayItem is one custom off day (公司自定义休息日)
+type OffDayItem struct {
+	Date      string `json:"date"` // YYYY-MM-DD
+	Note      string `json:"note"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// AddOffDay upserts a custom off day. 自定义休息日优先级最高：即使当天是
+// 国家调休上班日或法定节假日，也按休息日跳过（管理员手动指定优先）。
+func (s *QuotaRefreshService) AddOffDay(date, note string) error {
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		return fmt.Errorf("日期格式无效（应为 YYYY-MM-DD）")
+	}
+	db, err := s.openStore()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := ensureQuotaRefreshTables(ctx, db); err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO quota_refresh_off_days (date, note, created_at) VALUES (?, ?, ?)
+		 ON CONFLICT(date) DO UPDATE SET note = excluded.note`,
+		date, note, time.Now().Unix())
+	return err
+}
+
+// RemoveOffDay deletes a custom off day (no-op if absent)
+func (s *QuotaRefreshService) RemoveOffDay(date string) error {
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		return fmt.Errorf("日期格式无效（应为 YYYY-MM-DD）")
+	}
+	db, err := s.openStore()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := ensureQuotaRefreshTables(ctx, db); err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, `DELETE FROM quota_refresh_off_days WHERE date = ?`, date)
+	return err
+}
+
+// ListOffDays returns all custom off days ordered by date
+func (s *QuotaRefreshService) ListOffDays() ([]OffDayItem, error) {
+	db, err := s.openStore()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := ensureQuotaRefreshTables(ctx, db); err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT date, note, created_at FROM quota_refresh_off_days ORDER BY date`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OffDayItem{}
+	for rows.Next() {
+		var it OffDayItem
+		if err := rows.Scan(&it.Date, &it.Note, &it.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	return items, nil
+}
+
+// CalendarDay is one day's scheduling annotation for the preview calendar
+type CalendarDay struct {
+	Date        string `json:"date"`         // YYYY-MM-DD
+	Weekday     int    `json:"weekday"`      // 0=周日 … 6=周六
+	IsCNHoliday bool   `json:"is_cn_holiday"` // 法定节假日
+	IsCNWorkday bool   `json:"is_cn_workday"` // 调休上班日
+	IsOffDay    bool   `json:"is_off_day"`    // 自定义休息日
+	Skipped     bool   `json:"skipped"`       // 当前调度模式下该天是否跳过
+	Reason      string `json:"reason"`        // 跳过原因：自定义休息日/周末/法定节假日；空 = 执行
+}
+
+// CalendarPreview returns the next `days` days annotated per the current
+// schedule config (used by the frontend preview calendar).
+func (s *QuotaRefreshService) CalendarPreview(days int) ([]CalendarDay, error) {
+	if days <= 0 || days > 90 {
+		days = 30
+	}
+	cfg, err := s.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+	offDays := map[string]bool{}
+	for _, d := range cfg.OffDays {
+		offDays[d] = true
+	}
+	skipW, skipH := cfg.ScheduleMode != ScheduleDaily, cfg.ScheduleMode != ScheduleDaily
+	now := time.Now()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	items := make([]CalendarDay, 0, days)
+	for i := 0; i < days; i++ {
+		t := start.AddDate(0, 0, i)
+		dateStr := t.Format("2006-01-02")
+		day := CalendarDay{
+			Date:        dateStr,
+			Weekday:     int(t.Weekday()),
+			IsCNHoliday: IsCNHoliday(t),
+			IsCNWorkday: IsCNWorkday(t),
+			IsOffDay:    offDays[dateStr],
+		}
+		day.Skipped = IsSkippedRefreshDay(t, skipW, skipH, offDays)
+		switch {
+		case day.IsOffDay:
+			day.Reason = "自定义休息日"
+		case day.Skipped && IsCNHoliday(t):
+			day.Reason = "法定节假日"
+		case day.Skipped && (t.Weekday() == time.Saturday || t.Weekday() == time.Sunday):
+			day.Reason = "周末"
+		case day.Skipped:
+			day.Reason = "跳过"
+		}
+		items = append(items, day)
+	}
+	return items, nil
 }
 
 func sameDay(a, b int64) bool {

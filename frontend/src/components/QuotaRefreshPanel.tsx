@@ -17,10 +17,32 @@ interface QuotaRefreshConfig {
   refresh_time: string
   mode: string // per-token | shared
   shared_budget: number
+  schedule_mode: string // daily(每天) | workday(仅工作日) | custom(自定义日历)
+  default_cap_yuan: number // 每人每日默认上限（元），未单独配置的令牌使用
+  off_days: string[] // 自定义休息日 YYYY-MM-DD
   last_run_at: number
   last_run_info: string
   updated_at: number
   wallet_balance: number // 共享池当前剩余额度（启用令牌用户钱包合计）
+  next_run_at: number // 下次执行时间（后端按跳过规则计算）
+  next_run_info: string // 下次执行时间描述
+}
+
+// 日历预览单日标注（后端 /api/quota-refresh/calendar 返回）
+interface CalendarDay {
+  date: string // YYYY-MM-DD
+  weekday: number // 0=周日 … 6=周六
+  is_cn_holiday: boolean
+  is_cn_workday: boolean // 调休上班日
+  is_off_day: boolean // 自定义休息日
+  skipped: boolean // 当前调度模式下是否跳过
+  reason: string // 跳过原因；空 = 执行
+}
+
+const SCHEDULE_MODES: Record<string, { label: string; desc: string }> = {
+  daily: { label: '每天执行', desc: '不跳过任何日期' },
+  workday: { label: '仅工作日', desc: '自动跳过周末与法定节假日（调休上班日照常）' },
+  custom: { label: '自定义日历', desc: '工作日 + 点选额外休息日（公司放假等）' },
 }
 
 interface TokenCap {
@@ -81,6 +103,11 @@ export function QuotaRefreshPanel() {
   const [mode, setMode] = useState('per-token')
   const [moneyInput, setMoneyInput] = useState('') // per-token: 每令牌额度；shared: 共享总额度
   const [refreshTime, setRefreshTime] = useState('00:00')
+  const [scheduleMode, setScheduleMode] = useState<'daily' | 'workday' | 'custom'>('daily')
+  const [calendarDays, setCalendarDays] = useState<CalendarDay[]>([]) // 未来 30 天日历预览
+  const [calendarLoading, setCalendarLoading] = useState(false)
+  const [calendarAction, setCalendarAction] = useState('') // 正在切换的休息日（防连点）
+  const [defaultCapInput, setDefaultCapInput] = useState('20') // 每人默认上限（元），未单独配置的令牌使用
   const [assignments, setAssignments] = useState<AssignmentItem[]>([])
   // 分配表行内编辑草稿：保留原始输入字符串，避免 toFixed 回显导致无法输入多位/小数
   const [drafts, setDrafts] = useState<Record<number, string>>({})
@@ -106,6 +133,43 @@ export function QuotaRefreshPanel() {
       if (j.success) setWalletBalance(j.data.wallet_balance ?? 0)
     } catch (e) { /* 网络抖动时保持旧值 */ }
   }, [apiUrl, getAuthHeaders])
+
+  // 未来 30 天日历预览（标注执行/跳过原因）
+  const fetchCalendar = useCallback(async () => {
+    setCalendarLoading(true)
+    try {
+      const res = await fetch(`${apiUrl}/api/quota-refresh/calendar?days=30`, { headers: getAuthHeaders() })
+      const j = await res.json()
+      if (j.success) setCalendarDays(j.data.items || [])
+    } catch (e) { /* 网络抖动时保持旧值 */ }
+    finally { setCalendarLoading(false) }
+  }, [apiUrl, getAuthHeaders])
+
+  // 切换自定义休息日（custom 模式下点击日历单元格）
+  const toggleOffDay = async (date: string) => {
+    const day = calendarDays.find(d => d.date === date)
+    const isOff = !!day?.is_off_day
+    setCalendarAction(date)
+    try {
+      const res = isOff
+        ? await fetch(`${apiUrl}/api/quota-refresh/off-days?date=${date}`, { method: 'DELETE', headers: getAuthHeaders() })
+        : await fetch(`${apiUrl}/api/quota-refresh/off-days`, { method: 'PUT', headers: getAuthHeaders(), body: JSON.stringify({ date, note: '自定义休息日' }) })
+      const j = await res.json()
+      if (j.success) {
+        await Promise.all([fetchCalendar(), fetchAll()])
+        showToast('success', isOff ? `已取消 ${date} 的休息日` : `已添加 ${date} 为休息日`)
+      } else {
+        showToast('error', j.error?.message || '操作失败')
+      }
+    } catch (e) {
+      showToast('error', '操作失败')
+    } finally {
+      setCalendarAction('')
+    }
+  }
+
+  // 调度模式变化后刷新日历（执行/跳过标注依赖当前模式）
+  useEffect(() => { fetchCalendar() }, [scheduleMode, fetchCalendar])
 
   // 共享池余额每 1 分钟自动刷新（与时段定价检测频率一致）
   useEffect(() => {
@@ -269,12 +333,16 @@ export function QuotaRefreshPanel() {
           setMoneyInput(cfgData.data.quota_amount > 0 ? (cfgData.data.quota_amount / QUOTA_PER_YUAN).toFixed(2) : '')
         }
         setRefreshTime(cfgData.data.refresh_time || '00:00')
+        const cfgSchedule = cfgData.data.schedule_mode || 'daily'
+        setScheduleMode(cfgSchedule === 'workday' || cfgSchedule === 'custom' ? cfgSchedule : 'daily')
+        setDefaultCapInput(cfgData.data.default_cap_yuan > 0 ? String(cfgData.data.default_cap_yuan) : '20')
       }
       if (runsData.success) setRuns(runsData.data.items)
       if (asgData.success) {
         setAssignments(asgData.data.items || [])
         setDrafts({}) // 新数据加载后丢弃编辑草稿
       }
+      fetchCalendar()
     } catch (e) {
       showToast('error', '加载定时刷新配置失败')
     } finally {
@@ -315,6 +383,7 @@ export function QuotaRefreshPanel() {
         }
       }
       // 2) 保存配置
+      const defaultCap = parseFloat(defaultCapInput)
       const res = await fetch(`${apiUrl}/api/quota-refresh/config`, {
         method: 'PUT',
         headers: getAuthHeaders(),
@@ -324,6 +393,8 @@ export function QuotaRefreshPanel() {
           refresh_time: refreshTime,
           mode,
           shared_budget: mode === 'shared' ? money : 0,
+          schedule_mode: scheduleMode,
+          default_cap_yuan: !isNaN(defaultCap) && defaultCap > 0 ? defaultCap : 20,
         }),
       })
       const data = await res.json()
@@ -501,9 +572,10 @@ export function QuotaRefreshPanel() {
     </div>
   )
 
-  // 下次执行时间：今天的 HH:mm，已过则明天
+  // 下次执行时间：优先用后端按跳过规则计算的结果（含跳过提示），否则本地兜底
   const nextRunLabel = (() => {
     if (!config || !config.enabled) return null
+    if (config.next_run_info) return `下次执行 ${config.next_run_info}`
     const [h, m] = (config.refresh_time || '00:00').split(':').map(Number)
     const now = new Date()
     const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0)
@@ -514,11 +586,15 @@ export function QuotaRefreshPanel() {
   const money = parseFloat(moneyInput)
   const previewQuota = money > 0 ? Math.round(money * QUOTA_PER_YUAN) : 0
 
-  // 是否有未保存的修改：开启状态/额度/刷新时间 与已保存配置不一致时提醒
+  // 是否有未保存的修改：开启状态/额度/刷新时间/调度模式 与已保存配置不一致时提醒
   const hasUnsaved = (() => {
     if (!config) return false
     if (enabled !== config.enabled) return true
     if (refreshTime !== (config.refresh_time || '00:00')) return true
+    const cfgSchedule = config.schedule_mode || 'daily'
+    if (scheduleMode !== (cfgSchedule === 'workday' || cfgSchedule === 'custom' ? cfgSchedule : 'daily')) return true
+    const defaultCap = parseFloat(defaultCapInput)
+    if (!isNaN(defaultCap) && Math.abs(defaultCap - (config.default_cap_yuan || 20)) > 0.001) return true
     const cfgMoney = config.mode === 'shared'
       ? config.shared_budget
       : config.quota_amount / QUOTA_PER_YUAN
@@ -684,6 +760,102 @@ export function QuotaRefreshPanel() {
           </div>
         </div>
 
+        {/* 调度规则：执行日历（每天/仅工作日/自定义）+ 每人默认上限 */}
+        <div className="mt-4 rounded-lg border border-primary/20 bg-muted/20 p-3">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-muted-foreground">调度模式</label>
+              <div className="inline-flex rounded-lg border bg-background p-0.5">
+                {(['daily', 'workday', 'custom'] as const).map((m) => (
+                  <Button
+                    key={m}
+                    variant={scheduleMode === m ? 'default' : 'ghost'}
+                    size="sm"
+                    className="h-7 px-3 text-xs"
+                    onClick={() => setScheduleMode(m)}
+                    title={SCHEDULE_MODES[m].desc}
+                  >
+                    {SCHEDULE_MODES[m].label}
+                  </Button>
+                ))}
+              </div>
+              <p className="text-[11px] text-muted-foreground">{SCHEDULE_MODES[scheduleMode].desc}</p>
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-muted-foreground">
+                每人默认上限（元/天）
+              </label>
+              <Input
+                type="number"
+                min="0"
+                step="0.1"
+                className="h-8 w-28"
+                value={defaultCapInput}
+                onChange={(e) => setDefaultCapInput(e.target.value)}
+                title="共享总额度模式下，未单独设置上限的令牌使用该默认值；刷新时按此更新每个令牌额度"
+              />
+            </div>
+          </div>
+
+          {/* 执行日历预览：未来 30 天；custom 模式可点选/取消休息日 */}
+          <div className="mt-3">
+            <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span className="text-[11px] font-medium text-muted-foreground">未来 30 天执行日历</span>
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span className="inline-block h-2 w-2 rounded-full bg-primary/60" /> 执行
+              </span>
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span className="inline-block h-2 w-2 rounded-full bg-muted-foreground/40" /> 周末
+              </span>
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span className="inline-block h-2 w-2 rounded-full bg-red-500/70" /> 法定节假日
+              </span>
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span className="inline-block h-2 w-2 rounded-full bg-orange-500/80" /> 自定义休息日
+              </span>
+              {calendarLoading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+              {scheduleMode === 'custom' && (
+                <span className="text-[10px] text-primary">点击日历可添加/取消休息日</span>
+              )}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {['日', '一', '二', '三', '四', '五', '六'].map((w) => (
+                <div key={w} className="py-0.5 text-center text-[10px] font-medium text-muted-foreground">{w}</div>
+              ))}
+              {calendarDays.length > 0 && Array.from({ length: calendarDays[0].weekday }).map((_, i) => (
+                <div key={`pad-${i}`} />
+              ))}
+              {calendarDays.map((d) => {
+                const dayNum = parseInt(d.date.slice(8), 10)
+                const clickable = scheduleMode === 'custom'
+                const busy = calendarAction === d.date
+                const cls = d.is_off_day
+                  ? 'bg-orange-500/15 text-orange-700 border-orange-300 dark:text-orange-400'
+                  : d.skipped && d.is_cn_holiday
+                    ? 'bg-red-500/10 text-red-600 border-red-200 dark:border-red-900'
+                    : d.skipped
+                      ? 'bg-muted text-muted-foreground border-transparent'
+                      : 'bg-primary/10 text-primary border-primary/30'
+                return (
+                  <div
+                    key={d.date}
+                    title={`${d.date}${d.reason ? `（${d.reason}）` : '（执行）'}${clickable ? '，点击切换休息日' : ''}`}
+                    onClick={() => clickable && !busy && toggleOffDay(d.date)}
+                    className={`flex h-8 cursor-default items-center justify-center rounded border text-xs tabular-nums transition-colors ${cls} ${clickable && !busy ? 'cursor-pointer hover:ring-2 hover:ring-primary/40' : ''} ${busy ? 'opacity-50' : ''}`}
+                  >
+                    {dayNum}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
+            被跳过的日期不执行、不补跑，顺延至下一个执行日；调休上班日（周末补班）始终按工作日正常执行。
+            每人默认上限在共享总额度模式下生效：未单独设置上限的令牌在定时刷新时按此默认值更新额度。
+          </p>
+        </div>
+
         {/* 每令牌额度模式：统一额度在顶部输入；可按用量占比生成分配表；分配表可编辑 */}
         {mode === 'per-token' && (
           <div className="mt-4 space-y-3 border-t pt-3">
@@ -755,7 +927,9 @@ export function QuotaRefreshPanel() {
               </p>
               <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
                 在上方「共享总额度（元/天）」设置全站每日总额度，所有令牌共享同一个额度池：
-                池内有余额时正常调用（从管理员账户钱包扣减），池用尽后全部令牌停止使用，每天刷新时间恢复。
+                池内有余额时正常调用（从管理员账户钱包扣减），池用尽后全部令牌停止使用。
+                每次定时刷新会同时更新两项：① 把共享池重置为配置的总额度（更新总额度）；
+                ② 按每人上限表（含默认上限）重置每个令牌的额度（更新每人上限）。
               </p>
               {previewQuota > 0 && (
                 <p className="mt-2 text-[11px]">
@@ -786,9 +960,10 @@ export function QuotaRefreshPanel() {
                 </Button>
               </p>
               <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-                每个令牌每日上限（可逐行调整）：达到上限后该令牌自动停用，其余令牌不受影响。
+                每个令牌每日上限（可逐行调整，也可在上方「调度规则」设置每人默认上限，未单独设置的令牌自动使用默认值）：
+                达到上限后该令牌自动停用，其余令牌不受影响。
                 打开「解除限制」后，该令牌不再受个人上限约束，改用共享池剩余额度（池用尽后全部令牌停止）。
-                修改后点「保存上限配置」立即生效。
+                修改后点「保存上限配置」立即生效；定时刷新时也会按此表（含默认上限）统一更新每人额度。
               </p>
               <div className="mt-2 flex items-center gap-2">
                 <span className="whitespace-nowrap text-[11px] text-muted-foreground">快捷批量：</span>
