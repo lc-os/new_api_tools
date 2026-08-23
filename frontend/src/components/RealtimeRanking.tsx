@@ -192,7 +192,7 @@ interface MultiIPUserItem {
   username: string
   ip_count: number
   request_count: number
-  top_ips: Array<{ ip: string; request_count: number }>
+  ips: Array<{ ip: string; request_count: number }>
 }
 
 // URL 路径映射 (History API)
@@ -2923,7 +2923,7 @@ export function RealtimeRanking() {
                                 </TableCell>
                                 <TableCell className="hidden md:table-cell py-2.5">
                                   <div className="flex flex-wrap gap-1.5">
-                                    {item.top_ips.slice(0, 2).map((ip) => (
+                                    {(item.ips || []).slice(0, 2).map((ip) => (
                                       <div key={ip.ip} className="flex items-center gap-1">
                                         <code className="text-xs font-medium bg-muted/80 px-2 py-1 rounded font-mono border border-border/50 text-foreground/90 tabular-nums">
                                           {ip.ip}
