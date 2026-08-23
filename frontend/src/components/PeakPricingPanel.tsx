@@ -153,8 +153,9 @@ export function PeakPricingPanel() {
           </Badge>
         </CardTitle>
         <CardDescription>
-          默认按<b>空闲价</b>计费；高峰时段（北京时间 9:00-12:00、14:00-18:00）价格为空闲价的
-          {multiplier} 倍。开启/停用/调整后点「保存配置」立即生效，系统每分钟检查时段自动切换 deepseek-v4-* 定价。
+          默认按<b>空闲价</b>计费；高峰时段为<b>北京时间周一至周五 9:00-12:00、14:00-18:00</b>（周六/周日及其余时段为空闲），
+          高峰价为空闲价的 {multiplier} 倍。开启/停用/调整后点「保存配置」立即生效，系统每分钟检查时段自动切换
+          deepseek-v4-* 定价（含 deepseek-v4-flash-vision-exp）。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -190,7 +191,7 @@ export function PeakPricingPanel() {
               placeholder="09:00-12:00,14:00-18:00"
               className="font-mono"
             />
-            <p className="text-[11px] text-muted-foreground">多个时段用逗号分隔，如 09:00-12:00,14:00-18:00</p>
+            <p className="text-[11px] text-muted-foreground">多个时段用逗号分隔，如 09:00-12:00,14:00-18:00；仅周一至周五生效（周末自动按空闲价）</p>
           </div>
 
           <div className="space-y-1.5">
@@ -276,7 +277,8 @@ export function PeakPricingPanel() {
             </div>
             <p className="mt-1.5 text-[11px] text-muted-foreground">
               切换时段时后台按此模型定价改写 new-api 的 ModelRatio（输出/命中价随 ModelRatio 同比例缩放），
-              只影响 deepseek-v4-* 四个模型，其余模型不变。
+              只影响 deepseek-v4-* 五个模型（含 deepseek-v4-flash-vision-exp），其余模型不变。
+              价格参考 <a href="https://api-docs.deepseek.com/zh-cn/quick_start/pricing" target="_blank" rel="noreferrer" className="text-primary underline">DeepSeek 官方定价</a>。
             </p>
           </div>
         ) : baseline ? (

@@ -19,12 +19,31 @@ import (
 )
 
 // DeepSeekV4Models are the models whose prices switch between peak/off-peak.
-// Peak hours (Beijing time): 09:00-12:00 & 14:00-18:00. The DEFAULT price is
-// the off-peak (idle) price; during peak hours the price is multiplied by
-// PeakMultiplier (default 2). Only the ModelRatio keys of these models are
-// rewritten — new-api bills cache hits as ModelRatio×CacheRatio and output as
-// ModelRatio×CompletionRatio, so hit/output scale with ModelRatio automatically.
-var DeepSeekV4Models = []string{"deepseek-v4-flash", "deepseek-v4-flash-max", "deepseek-v4-pro", "deepseek-v4-pro-max"}
+// Peak hours (Beijing time): Mon-Fri 09:00-12:00 & 14:00-18:00 — weekends are
+// off-peak. The DEFAULT price is the off-peak (idle) price; during peak hours
+// the price is multiplied by PeakMultiplier (default 2). Only the ModelRatio
+// keys of these models are rewritten — new-api bills cache hits as
+// ModelRatio×CacheRatio and output as ModelRatio×CompletionRatio, so hit/output
+// scale with ModelRatio automatically.
+var DeepSeekV4Models = []string{
+	"deepseek-v4-flash",
+	"deepseek-v4-flash-max",
+	"deepseek-v4-flash-vision-exp",
+	"deepseek-v4-pro",
+	"deepseek-v4-pro-max",
+}
+
+// VisionModelFallbackPrice is the official off-peak (idle) price of
+// deepseek-v4-flash-vision-exp, which equals deepseek-v4-flash (官网定价：
+// 空闲 输入未命中 1.5元/M / 缓存命中 0.05元/M / 输出 4.5元/M；高峰 ×2）。
+// new-api 尚未在 options 里配置该模型时，用此内置官网价作为基准补齐，
+// 保证展示与高峰切换都覆盖 vision-exp；用户可随时「捕获基准」用线上价覆盖。
+// ratio 换算：1 元 = 500,000 quota → ratio = 元/M × 0.5。
+const (
+	VisionModelFallbackModelRatio      = 0.75  // 空闲 miss 1.5 元/M
+	VisionModelFallbackCompletionRatio = 3.0   // 输出/输入 = 4.5/1.5
+	VisionModelFallbackCacheRatio      = 0.03333333 // 命中/未命中 = 0.05/1.5
+)
 
 // PeakPricingService switches new-api model prices between the default
 // off-peak price and PeakMultiplier× at peak hours. Config + off-peak price
@@ -222,8 +241,14 @@ func ValidatePeakPeriods(periods string) error {
 	return nil
 }
 
-// InPeakPeriod reports whether `now` (local/Beijing time) falls in any peak period
+// InPeakPeriod reports whether `now` (Beijing time) falls in any peak period.
+// 高峰时段为北京时间周一至周五 9:00-12:00、14:00-18:00（其余为空闲时段）：
+// 周六/周日即使落在时间段内也不计为高峰（周末全天空闲）。
 func (s *PeakPricingService) InPeakPeriod(periods string, now time.Time) bool {
+	// 周末不进入高峰时段（官网规则：高峰仅周一至周五）
+	if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
+		return false
+	}
 	for _, p := range strings.Split(periods, ",") {
 		p = strings.TrimSpace(p)
 		if p == "" {
@@ -301,6 +326,9 @@ func (s *PeakPricingService) CaptureBaseline() (PeakBaseline, error) {
 			}
 		}
 	}
+	// new-api 尚未配置的模型（如刚发布的 vision-exp）：用内置官网价补齐，
+	// 保证模型列表/展示/高峰切换都覆盖，用户可稍后重新捕获覆盖为线上价。
+	applyVisionFallback(&baseline)
 
 	db, err := s.openStore()
 	if err != nil {
@@ -319,6 +347,22 @@ func (s *PeakPricingService) CaptureBaseline() (PeakBaseline, error) {
 		ON CONFLICT(id) DO UPDATE SET baseline = excluded.baseline, captured_at = excluded.captured_at`,
 		string(data), baseline.CapturedAt)
 	return baseline, err
+}
+
+// applyVisionFallback fills deepseek-v4-flash-vision-exp into the baseline with
+// the built-in official price when new-api has no entry for it (missing = same
+// price as deepseek-v4-flash). Idempotent: existing values are kept.
+func applyVisionFallback(b *PeakBaseline) {
+	const model = "deepseek-v4-flash-vision-exp"
+	if _, ok := b.ModelRatio[model]; !ok {
+		b.ModelRatio[model] = VisionModelFallbackModelRatio
+	}
+	if _, ok := b.CompletionRatio[model]; !ok {
+		b.CompletionRatio[model] = VisionModelFallbackCompletionRatio
+	}
+	if _, ok := b.CacheRatio[model]; !ok {
+		b.CacheRatio[model] = VisionModelFallbackCacheRatio
+	}
 }
 
 // GetBaseline returns the stored peak-price baseline (may be empty if never captured)
@@ -349,6 +393,11 @@ func (s *PeakPricingService) GetBaseline() (PeakBaseline, error) {
 	}
 	if err := json.Unmarshal([]byte(raw), &baseline); err != nil {
 		return baseline, err
+	}
+	// 兼容旧快照：读取时自动为缺失的 vision-exp 补官网价，无需重新捕获
+	// （注意：GetBaseline 不落库，避免每次读取都写；CaptureBaseline 时才持久化）
+	if len(baseline.ModelRatio) > 0 {
+		applyVisionFallback(&baseline)
 	}
 	return baseline, nil
 }
@@ -606,6 +655,11 @@ func (s *PeakPricingService) GetModelPricing(peakMultiplier float64) ([]ModelPri
 	if len(baseline.ModelRatio) == 0 {
 		return nil, nil
 	}
+	return s.getModelPricingFrom(baseline, peakMultiplier)
+}
+
+// getModelPricingFrom builds the price view from a given baseline (testable).
+func (s *PeakPricingService) getModelPricingFrom(baseline PeakBaseline, peakMultiplier float64) ([]ModelPriceView, error) {
 	if peakMultiplier < 1 || peakMultiplier > 10 {
 		peakMultiplier = 2
 	}
